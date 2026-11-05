@@ -1,0 +1,101 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_memory_scope_semantics : require
+// T3 block39: projection -> decups (postblend) sub-fusion, one dispatch.
+//
+// Parents, by the identity the 267 research plan really binds:
+//   * pass 151 (1-based 152) "ioport_block39_0"  project-k1024.spv
+//     source candidates/amd-map-20261015/s1-project-split-complete/project-k1024/source/
+//            ioport_project_opt_fp16.comp   (PROJECT_K=1024 PROJECT_PAIR=2;
+//     recompiled here at 5442e397... == the bound SPV, so the baseline is that source)
+//   * pass 152 (1-based 153) "ioport_block39_1"  io-f22-postblend.spv
+//     source candidates/amd-map-20261015/s1-tail-layout/c64-complete/proofs/
+//            producer-source/ioport_block62_1/ioport_blend_fp16.comp
+//
+// What changes: the projection no longer writes its 512-channel, canonical-NHWC
+// output (resource 466, 147,456 halves).  The decups consumes the same FP16 value
+// out of the projection's own shared tile and writes the four up-sampled pixels it
+// owns.  Removed per frame: 147,456 half stores + 540,672 half loads of that
+// intermediate (the decups read every main value four times) and one dispatch.
+//
+// Kept on purpose, value-identical:
+//   * identical MMA tiling, K order (pc.p1.x/16 steps), FP32 accumulator, one FP16
+//     narrow per output element - the narrow is `float16_t(tile_f[i])`, byte for byte
+//     the conversion the old global store performed;
+//   * the decups' own arithmetic: gain multiply (one FP16 rounding, precise) then
+//     FP16 add (precise), i.e. two separately rounded products and a rounded add;
+//   * the decups' output addressing: layout 0 (4x4 tiles, 16-channel groups) over
+//     out_W x out_H x N, the same io_at the parent used;
+//   * the main-gain branch and its weight record index (p7.x == 1).  This call site
+//     pushes p7.x = 0, so the branch is compiled but never taken; the weights range
+//     it would read (524,288 + 512 + c) is outside the 524,800-half pack, which is
+//     exactly why the captured call leaves it off.
+//   * the 512 B FP32 shared tile: the four up-sampled outputs of one element are
+//     scattered in layout 0, so a direct fragment store cannot express them.  That
+//     scratch is the parent's, not a new one.
+#include "t3_b39_common.glsl"
+layout(local_size_x=32) in;
+shared float tile_f[128];
+
+// One projection element (token px,py; channel n0 + ci) -> its four decups pixels.
+void blend_quad(uint px, uint py, uint c, float16_t main_v) {
+    uint ox = 2u * px, oy = 2u * py;
+    if (pc.p7.x == 1u) main_v = main_v * w[pc.p1.w + pc.p1.y + c];
+    precise float16_t skip_gain = w[pc.p1.w + c];
+    for (uint dy = 0u; dy < 2u; ++dy) {
+        uint y = oy + dy;
+        if (y >= pc.p5.y) continue;
+        for (uint dx = 0u; dx < 2u; ++dx) {
+            uint x = ox + dx;
+            if (x >= pc.p5.x) continue;
+            precise float16_t skip_v = io_skip(x, y, c) * skip_gain;
+            precise float16_t value = main_v + skip_v;
+            io_write_blend(x, y, c, value);
+        }
+    }
+}
+
+void main() {
+    uint lane = gl_LocalInvocationID.x, m0 = gl_WorkGroupID.x * 8u;
+    uint n0 = gl_WorkGroupID.y * (16u * PROJECT_PAIR);
+    // Identical captured projection: IW=OW, IH=OH, every dispatched M8 row valid.
+    coopmat<float,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator> acc=
+        coopmat<float,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>(0.0);
+#if PROJECT_PAIR==2
+    coopmat<float,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator> acc1=
+        coopmat<float,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>(0.0);
+#endif
+    for (uint k = 0u; k < pc.p1.x; k += 16u) {
+        coopmat<float16_t,gl_ScopeSubgroup,8,16,gl_MatrixUseA> aa;
+        coopmat<float16_t,gl_ScopeSubgroup,16,16,gl_MatrixUseB> bb;
+        coopMatLoad(aa, x, pc.p4.x + m0 * pc.p1.x + k, pc.p1.x,
+                    gl_CooperativeMatrixLayoutRowMajor);
+        coopMatLoad(bb, w, pc.p1.z + ((n0 / 16u) * (pc.p1.x / 16u) + k / 16u) * 256u,
+                    16u, gl_CooperativeMatrixLayoutColumnMajor);
+        acc = coopMatMulAdd(aa, bb, acc);
+#if PROJECT_PAIR==2
+        coopmat<float16_t,gl_ScopeSubgroup,16,16,gl_MatrixUseB> bb1;
+        coopMatLoad(bb1, w, pc.p1.z + (((n0 + 16u) / 16u) * (pc.p1.x / 16u) + k / 16u) * 256u,
+                    16u, gl_CooperativeMatrixLayoutColumnMajor);
+        acc1 = coopMatMulAdd(aa, bb1, acc1);
+#endif
+    }
+    coopMatStore(acc, tile_f, 0u, 16u, gl_CooperativeMatrixLayoutRowMajor);
+    barrier();
+    for (uint i = lane; i < 128u; i += 32u) {
+        uint t = m0 + i / 16u, px = t % pc.p0.z, py = t / pc.p0.z;
+        if (py < pc.p0.w) blend_quad(px, py, n0 + i % 16u, float16_t(tile_f[i]));
+    }
+#if PROJECT_PAIR==2
+    // Finish reading the reused scratch tile before overwriting it.
+    barrier();
+    coopMatStore(acc1, tile_f, 0u, 16u, gl_CooperativeMatrixLayoutRowMajor);
+    barrier();
+    for (uint i = lane; i < 128u; i += 32u) {
+        uint t = m0 + i / 16u, px = t % pc.p0.z, py = t / pc.p0.z;
+        if (py < pc.p0.w) blend_quad(px, py, n0 + 16u + i % 16u, float16_t(tile_f[i]));
+    }
+#endif
+}

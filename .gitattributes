@@ -1,0 +1,2 @@
+# Preserve the byte-verified source and provenance files across checkouts.
+* -text

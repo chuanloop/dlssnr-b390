@@ -1,0 +1,12 @@
+{
+  "_comment": "Plan shader tag -> recipes.json key, for shaders whose recipe key still carries the source directory name instead of a compiled digest. `tools/reconcile_assets.py` uses this when the plan name cannot be matched by name (several profiles have more than one candidate, so guessing by prefix would be ambiguous). Only entries verified against a pass binding are listed; f04-31e9a53fa8dc (c256) is left out because its element count could not be matched to a source layout.",
+  "f04-3d2c04681f97": "f04-8aa2595a969b.spv",
+  "f04-a39d1ed429c4": "f04-958c9719869c.spv",
+  "f04-31e9a53fa8dc": "f04-dc5f1634de7e.spv",
+  "f05-92313458e0a2": "f05-3c26fc5338aa.spv",
+  "f05-f390348a1486": "f05-77c63dc928ba.spv",
+  "f05-db4581ff6c2c": "f05-236aad961967.spv",
+  "f06-100b9a8ad24f": "f06-ca587aa46abe.spv",
+  "f06-58755f72c167": "f06-7c839f246426.spv",
+  "f06-31d55b6d5326": "f06-8f592cf9576f.spv"
+}

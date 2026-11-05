@@ -1,0 +1,1218 @@
+// Complete transpose/register C32 handoff, CPU-generated literal fragments.
+// AMD purpose: fswin_t.comp167-205: feature rows are the next contraction K.
+// Intel coordinates come ONLY from the independently sealed measured helper.
+// K/V cross-SG shared is required and explicitly retained; all other intermediates stay registers.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_shader_subgroup_ballot : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+#include "register_handoff.glsl"
+
+// ---- T3 transport variant: identity shuffle round-trips removed ----------
+// nrh_unpack2(p) was:
+//   uint moved = subgroupShuffle(p, lane ^ 1);
+//   uint back  = subgroupShuffle(moved, lane ^ 1);
+//   return unpackFloat2x16(back);
+// The two shuffles are exact inverses for every lane (id is lane^1 both
+// times), so back == p and the helper is unpackFloat2x16(p).  The value is
+// unchanged for every input; only the lane-transport instructions disappear.
+
+layout(local_size_x=128, local_size_y=1, local_size_z=1) in;
+layout(set=0,binding=0) buffer HalfBuf { float16_t wb[]; };
+layout(set=0,binding=1) buffer FloatBuf { float fb[]; };
+layout(set=0,binding=2) buffer PackBuf { float16_t pw[]; };
+layout(set=0,binding=5) buffer ProjIn { float16_t x65[]; };
+layout(set=0,binding=6) buffer SkipIn { float16_t sk[]; };
+layout(set=0,binding=3) buffer ImageOut { float16_t imgout[]; };
+layout(set=0,binding=4) buffer DebugBuf { float16_t dbg[]; };
+layout(push_constant) uniform PC {
+    ivec4 p0; ivec4 p1; ivec4 p2; ivec4 p3;
+    // F2 fields.  p4 = (x65 base, projection weight half, skip half,
+    //                    projection tiles_x);
+    // p5 = (projection K, projection N, gain half, projection-gain enable);
+    // p6 = (skip W, skip H, projection IW, projection IH); p7 spare.
+    uvec4 p4; uvec4 p5; uvec4 p6; uvec4 p7;
+} pc;
+shared float16_t shK[2048];
+shared float16_t shV[2048];
+#define LROW gl_CooperativeMatrixLayoutRowMajor
+#define LCOL gl_CooperativeMatrixLayoutColumnMajor
+// half MpCubicSilu (guide §2.1): one rounding per half op
+float16_t nr_act_h(float16_t x) {
+    float16_t t = clamp(x, float16_t(-4.0), float16_t(4.0));
+    float16_t u = fma(float16_t(-0.055908203125), abs(t), float16_t(0.447265625));
+    return x * fma(t, u, float16_t(0.89453125));
+}
+
+// half swin exp (guide §2.3). M05 paired form: the former scalar
+// packHalf2x16/unpackHalf2x16 transform runs on two packed halves at once.
+// Bit-identical proof (CHANGES.md): the mantissa is bits 0..9, so
+// (h & 0x03ff03ff) << 5 sets only bits 5..14 of each 16-bit lane and can never
+// cross into the other half, for any input; the clamp keeps exactly the scalar
+// form's value domain, so fma/clamp/exception behaviour is unchanged.
+f16vec2 nr_exp_h2(f16vec2 xy) {
+    f16vec2 y = clamp(fma(xy, f16vec2(float16_t(0.044921875)), f16vec2(float16_t(1.30078125))),
+                      f16vec2(float16_t(1.03125)), f16vec2(float16_t(1.5693359375)));
+    uint h = packFloat2x16(y);
+    return unpackFloat2x16((h & 0x03ff03ffu) << 5u);
+}
+
+// M01: every call site uses t = t0 = sg*16 (so q = sg, s = 0) and c in
+// {0,8,16,24}; the tile base and oob are SG/WG-uniform and the four addresses
+// differ only by (c/16)*256 + c%16 in {0,8,256,264}. The base is formed once
+// per SG and broadcast — the AMD NR_WAVE_UNIFORM analog, applied only to
+// genuinely SG-uniform values, not a global macro.
+uint nr_tok_base(uint q, uint wx, uint wy, int shift, uint tiles_x, out bool oob) {
+    int tx = 2 * int(wx) + shift + int(q & 1u);
+    int ty = 2 * int(wy) + pc.p3.w + int(q >> 1u);
+    oob = (tx < 0 || ty < 0 || tx >= int(tiles_x) || ty >= pc.p3.z);
+    uint safe_tx = uint(clamp(tx, 0, int(tiles_x) - 1));
+    uint safe_ty = uint(clamp(ty, 0, pc.p3.z-1));
+    return (safe_ty * tiles_x + safe_tx) * 512u;   // s = 0, c = 0
+}
+
+
+f16vec2 full_norm(float16_t qlo,float16_t qhi,float16_t klo,float16_t khi) {
+ uint col=gl_SubgroupInvocationID&15u;
+ precise float16_t qs=qlo*qlo, ks=klo*klo;
+ precise float16_t qh=qhi*qhi, kh=khi*khi;
+ precise float16_t q=qs+qh, k=ks+kh;
+ if(col==15u) {q=fma(qhi,qhi,qs);k=fma(khi,khi,ks);}
+{f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(f16vec2(q,k)),8u)); q=q+peer.x; k=k+peer.y;}
+{f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(f16vec2(q,k)),4u)); q=q+peer.x; k=k+peer.y;}
+{f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(f16vec2(q,k)),2u)); q=q+peer.x; k=k+peer.y;}
+{f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(f16vec2(q,k)),1u)); q=q+peer.x; k=k+peer.y;}
+f16vec2 root=unpackFloat2x16(subgroupShuffle(packFloat2x16(f16vec2(q,k)),gl_SubgroupInvocationID&16u));q=root.x;k=root.y;
+return f16vec2(float16_t(inversesqrt(max(float(q),float(float16_t(0.000062))))),float16_t(inversesqrt(max(float(k),float(float16_t(0.000062))))));}
+
+uint nr_tok_addr(uint t, uint c, uint wx, uint wy, int shift, uint tiles_x, out bool oob) {
+    uint q = t >> 4u, s = t & 15u;
+    int tx = 2 * int(wx) + shift + int(q & 1u);
+    int ty = 2 * int(wy) + pc.p3.w + int(q >> 1u);
+    oob = (tx < 0 || ty < 0 || tx >= int(tiles_x) || ty >= pc.p3.z);
+    uint safe_tx = uint(clamp(tx, 0, int(tiles_x) - 1));
+    uint safe_ty = uint(clamp(ty, 0, pc.p3.z-1));
+    return (((safe_ty * tiles_x + safe_tx) * 2u + c / 16u) * 256u
+            + s * 16u + c % 16u);   // slot = s (4*(y%4)+(x%4), y-major)
+}
+
+// Measured CH ownership proved in CPU-local-reduction-proof.json.
+// Each lane owns one parity of16 features for its query column.
+f16vec2 nr_norm32_pair(NRH_CH q0,NRH_CH q1,NRH_CH q2,NRH_CH q3,
+                       NRH_CH k0,NRH_CH k1,NRH_CH k2,NRH_CH k3) {
+    float16_t qsq0_0=q0[0]*q0[0];
+    float16_t qsq0_1=q0[1]*q0[1];
+    float16_t qsq0_2=q0[2]*q0[2];
+    float16_t qsq0_3=q0[3]*q0[3];
+    float16_t qsq1_0=q1[0]*q1[0];
+    float16_t qsq1_1=q1[1]*q1[1];
+    float16_t qsq1_2=q1[2]*q1[2];
+    float16_t qsq1_3=q1[3]*q1[3];
+    float16_t qsq2_0=q2[0]*q2[0];
+    float16_t qsq2_1=q2[1]*q2[1];
+    float16_t qsq2_2=q2[2]*q2[2];
+    float16_t qsq2_3=q2[3]*q2[3];
+    float16_t qsq3_0=q3[0]*q3[0];
+    float16_t qsq3_1=q3[1]*q3[1];
+    float16_t qsq3_2=q3[2]*q3[2];
+    float16_t qa0=qsq0_0+qsq2_0;
+    float16_t qb0=qsq1_0+qsq3_0;
+    float16_t qs0=qa0+qb0;
+    float16_t qa1=qsq0_1+qsq2_1;
+    float16_t qb1=qsq1_1+qsq3_1;
+    float16_t qs1=qa1+qb1;
+    float16_t qa2=qsq0_2+qsq2_2;
+    float16_t qb2=qsq1_2+qsq3_2;
+    float16_t qs2=qa2+qb2;
+    float16_t qa3=qsq0_3+qsq2_3;
+    float16_t qb3;
+    // Measured map: lastcomponent is feature30 on evenparity and31 on oddparity.
+    // No subgroup helper appears inside this scalar parity branch.
+    if ((gl_SubgroupInvocationID&16u)==0u) {
+        float16_t qsq30_material=q3[3]*q3[3];
+        qb3=qsq1_3+qsq30_material;
+    } else {
+        qb3=fma(q3[3],q3[3],qsq1_3);
+    }
+    float16_t qs3=qa3+qb3;
+    float16_t qt4lo=qs0+qs2;
+    float16_t qt4hi=qs1+qs3;
+    float16_t qpartial=qt4lo+qt4hi;
+    float16_t ksq0_0=k0[0]*k0[0];
+    float16_t ksq0_1=k0[1]*k0[1];
+    float16_t ksq0_2=k0[2]*k0[2];
+    float16_t ksq0_3=k0[3]*k0[3];
+    float16_t ksq1_0=k1[0]*k1[0];
+    float16_t ksq1_1=k1[1]*k1[1];
+    float16_t ksq1_2=k1[2]*k1[2];
+    float16_t ksq1_3=k1[3]*k1[3];
+    float16_t ksq2_0=k2[0]*k2[0];
+    float16_t ksq2_1=k2[1]*k2[1];
+    float16_t ksq2_2=k2[2]*k2[2];
+    float16_t ksq2_3=k2[3]*k2[3];
+    float16_t ksq3_0=k3[0]*k3[0];
+    float16_t ksq3_1=k3[1]*k3[1];
+    float16_t ksq3_2=k3[2]*k3[2];
+    float16_t ka0=ksq0_0+ksq2_0;
+    float16_t kb0=ksq1_0+ksq3_0;
+    float16_t ks0=ka0+kb0;
+    float16_t ka1=ksq0_1+ksq2_1;
+    float16_t kb1=ksq1_1+ksq3_1;
+    float16_t ks1=ka1+kb1;
+    float16_t ka2=ksq0_2+ksq2_2;
+    float16_t kb2=ksq1_2+ksq3_2;
+    float16_t ks2=ka2+kb2;
+    float16_t ka3=ksq0_3+ksq2_3;
+    float16_t kb3;
+    // Measured map: lastcomponent is feature30 on evenparity and31 on oddparity.
+    // No subgroup helper appears inside this scalar parity branch.
+    if ((gl_SubgroupInvocationID&16u)==0u) {
+        float16_t ksq30_material=k3[3]*k3[3];
+        kb3=ksq1_3+ksq30_material;
+    } else {
+        kb3=fma(k3[3],k3[3],ksq1_3);
+    }
+    float16_t ks3=ka3+kb3;
+    float16_t kt4lo=ks0+ks2;
+    float16_t kt4hi=ks1+ks3;
+    float16_t kpartial=kt4lo+kt4hi;
+    uint partial_bits=nrh_pack2(qpartial,kpartial);
+    f16vec2 peer=nrh_unpack2(subgroupShuffleXor(partial_bits,16u));
+    bool even=(gl_SubgroupInvocationID&16u)==0u;
+    float16_t qeven=even?qpartial:peer.x, qodd=even?peer.x:qpartial;
+    float16_t keven=even?kpartial:peer.y, kodd=even?peer.y:kpartial;
+    float16_t qsum=qeven+qodd, ksum=keven+kodd;
+    float qmx=max(float(qsum),float(float16_t(0.000062)));
+    float kmx=max(float(ksum),float(float16_t(0.000062)));
+    float16_t nq=float16_t(inversesqrt(qmx)), nk=float16_t(inversesqrt(kmx));
+return f16vec2(nq,nk);
+}
+
+
+// ---------------------------------------------------------------------------
+// F2 decode-input fusion (AMD nr_graph.cpp:2984 fused_up; fswin_body.glsl:53
+// NR_FUSED_UPS_PROJECT).  Replaces block66's projection-f36 ->
+// io-f22-postblend -> body chain with one dispatch.
+#define NR2_MA coopmat<float16_t,gl_ScopeSubgroup,8,16,gl_MatrixUseA>
+#define NR2_MB coopmat<float16_t,gl_ScopeSubgroup,16,16,gl_MatrixUseB>
+#define NR2_MC coopmat<float,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>
+#define NR2_MH coopmat<float16_t,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>
+
+// ioport_common.glsl io_at, layout 0 (spatial 4x4 tiles, 16 channels) only -
+// block66's src/dst/skip layouts are all 0 in the parent plan.
+uint nrf2_io_at0(uint px,uint py,uint c,uint W,uint C) {
+    uint t=((py/4u)*(W/4u)+px/4u)*16u+4u*(py%4u)+px%4u;
+    return ((t/16u)*(C/16u)+c/16u)*256u+(t%16u)*16u+c%16u;
+}
+
+void nrf2_project_and_blend() {
+    const uint tid2 = gl_LocalInvocationID.x;
+    const uint sg2 = tid2 / 32u;
+    const uint lane2 = tid2 % 32u;
+    const uint wx2 = gl_WorkGroupID.x;
+    const uint wy2 = gl_WorkGroupID.y;
+    for(uint e=tid2;e<1024u;e+=128u){
+        uint p=e/pc.p5.x,k=e%pc.p5.x;
+        int x=4*int(wx2)-2+int(p%4u), y=4*int(wy2)+int(p/4u);
+        float16_t v=float16_t(0.0);
+        if(x>=0 && y>=0 && x<int(pc.p6.z) && y<int(pc.p6.w))
+            v=x65[pc.p4.x+nrf2_io_at0(uint(x),uint(y),k,pc.p6.z,pc.p5.x)];
+        shV[e]=v;
+    }
+    barrier();
+    // ---- projection: SG role (row half = sg2>>1, channel group = sg2&1) ----
+    // The bound projection kernel (PROJECT_WG=32, PROJECT_GATHER=0, K=64)
+    // computes c00/c01/c10/c11 with A = 8 coarse tokens x 16 K RowMajor from
+    // block65_out and B = 16x16 ColumnMajor weight tiles; K chunks ascend.
+    // One fragment per subgroup keeps that per-element K order bit-identical.
+    {
+        const uint rh = sg2 >> 1u;            // coarse tokens 0-7 / 8-15
+        const uint cg = sg2 & 1u;             // channels 0-15 / 16-31
+        const uint tile65 = wy2 * pc.p4.w + wx2;
+        const uint abase = pc.p4.x + tile65 * (pc.p5.x / 16u) * 256u
+                         + rh * 128u;
+        const uint wbase = pc.p4.y + cg * (pc.p5.x / 16u) * 256u;
+        NR2_MC acc = NR2_MC(0.0);
+        for (uint kc = 0u; kc < pc.p5.x; kc += 16u) {
+            NR2_MA a; NR2_MB b;
+            coopMatLoad(a, shV, rh * 8u * pc.p5.x + kc, pc.p5.x, LROW);
+            coopMatLoad(b, pw, wbase + (kc / 16u) * 256u, 16u, LCOL);
+            acc = coopMatMulAdd(a, b, acc);
+        }
+        // one fp16 narrowing, exactly the bound kernel's MH store rounding
+        NR2_MH h = NR2_MH(acc);
+        coopMatStore(h, shK, rh * 8u * 32u + cg * 16u, 32u, LROW);
+    }
+    barrier();
+}
+
+f16vec2 nr_blend_pair(uint sg2,uint slot,uint ch){
+ uint sx=slot%4u,sy=slot/4u;
+ int qx=2*int(gl_WorkGroupID.x)+pc.p0.y+int(sg2&1u);
+ int qy=2*int(gl_WorkGroupID.y)+pc.p3.w+int(sg2>>1u);
+ if(qx<0 || qy<0 || qx>=pc.p0.x || qy>=pc.p3.z) return f16vec2(0.0);
+ uint px=uint(qx)*4u+sx;
+ uint py=uint(qy)*4u+sy;
+ uint ct=(2u*(sg2>>1u)+(sy>>1u))*4u+2u*(sg2&1u)+(sx>>1u);
+ precise f16vec2 main_scaled=f16vec2(shK[ct*32u+ch],shK[ct*32u+ch+1u]);
+ if(pc.p5.w==1u) main_scaled=main_scaled*f16vec2(pw[pc.p5.z+pc.p5.y+ch],pw[pc.p5.z+pc.p5.y+ch+1u]);
+ const f16vec2 skip_gain=f16vec2(pw[pc.p5.z+ch],pw[pc.p5.z+ch+1u]);
+ uint sa=pc.p4.z+nrf2_io_at0(px,py,ch,pc.p6.x,32u);
+ const f16vec2 skip_input=f16vec2(sk[sa],sk[sa+1u]);
+ precise f16vec2 skip_v=skip_input*skip_gain;
+ precise f16vec2 value=main_scaled+skip_v;
+ return value;
+}
+
+void nr_body_stage() {
+    const uint tid = gl_LocalInvocationID.x;
+    const uint sg = tid / 32u;
+    const uint lane = tid % 32u;
+    const uint t0 = sg * 16u;
+    const uint wx = (pc.p3.y != 0) ? uint(pc.p0.w) : gl_WorkGroupID.x;
+    const uint wy = (pc.p3.y != 0) ? uint(pc.p3.x) : gl_WorkGroupID.y;
+    const int shift = pc.p0.y;
+    const uint tiles_x = uint(pc.p0.x);
+    const bool debug = pc.p0.z != 0;
+    // M01: one SG-uniform tile base serves the four input and four output
+    // token addresses (differences {0,8,256,264}); oob is the same for all of
+    // them. Broadcast only genuinely SG-uniform values.
+    bool tok_oob;
+    uint tok_base_wg = nr_tok_base(t0 >> 4u, wx, wy, shift, tiles_x, tok_oob);
+    uint tok_base = subgroupBroadcastFirst(tok_base_wg);
+    const bool tok_oob_u = subgroupBroadcastFirst(tok_oob ? 1u : 0u) != 0u;
+
+NRH_CH nx00,nx01,nx10,nx11;
+{
+uint packed=packFloat2x16(nr_blend_pair(sg,0u+(lane>>4u),2u*(lane&15u)));
+{f16vec2 v=unpackFloat2x16(subgroupShuffle(packed,16u*(lane>>4u)+0u+((lane&15u)>>1u)));nx00[0]=(lane&1u)==0u?v.x:v.y;}
+{f16vec2 v=unpackFloat2x16(subgroupShuffle(packed,16u*(lane>>4u)+8u+((lane&15u)>>1u)));nx01[0]=(lane&1u)==0u?v.x:v.y;}
+}
+{
+uint packed=packFloat2x16(nr_blend_pair(sg,2u+(lane>>4u),2u*(lane&15u)));
+{f16vec2 v=unpackFloat2x16(subgroupShuffle(packed,16u*(lane>>4u)+0u+((lane&15u)>>1u)));nx00[1]=(lane&1u)==0u?v.x:v.y;}
+{f16vec2 v=unpackFloat2x16(subgroupShuffle(packed,16u*(lane>>4u)+8u+((lane&15u)>>1u)));nx01[1]=(lane&1u)==0u?v.x:v.y;}
+}
+{
+uint packed=packFloat2x16(nr_blend_pair(sg,4u+(lane>>4u),2u*(lane&15u)));
+{f16vec2 v=unpackFloat2x16(subgroupShuffle(packed,16u*(lane>>4u)+0u+((lane&15u)>>1u)));nx00[2]=(lane&1u)==0u?v.x:v.y;}
+{f16vec2 v=unpackFloat2x16(subgroupShuffle(packed,16u*(lane>>4u)+8u+((lane&15u)>>1u)));nx01[2]=(lane&1u)==0u?v.x:v.y;}
+}
+{
+uint packed=packFloat2x16(nr_blend_pair(sg,6u+(lane>>4u),2u*(lane&15u)));
+{f16vec2 v=unpackFloat2x16(subgroupShuffle(packed,16u*(lane>>4u)+0u+((lane&15u)>>1u)));nx00[3]=(lane&1u)==0u?v.x:v.y;}
+{f16vec2 v=unpackFloat2x16(subgroupShuffle(packed,16u*(lane>>4u)+8u+((lane&15u)>>1u)));nx01[3]=(lane&1u)==0u?v.x:v.y;}
+}
+{
+uint packed=packFloat2x16(nr_blend_pair(sg,8u+(lane>>4u),2u*(lane&15u)));
+{f16vec2 v=unpackFloat2x16(subgroupShuffle(packed,16u*(lane>>4u)+0u+((lane&15u)>>1u)));nx10[0]=(lane&1u)==0u?v.x:v.y;}
+{f16vec2 v=unpackFloat2x16(subgroupShuffle(packed,16u*(lane>>4u)+8u+((lane&15u)>>1u)));nx11[0]=(lane&1u)==0u?v.x:v.y;}
+}
+{
+uint packed=packFloat2x16(nr_blend_pair(sg,10u+(lane>>4u),2u*(lane&15u)));
+{f16vec2 v=unpackFloat2x16(subgroupShuffle(packed,16u*(lane>>4u)+0u+((lane&15u)>>1u)));nx10[1]=(lane&1u)==0u?v.x:v.y;}
+{f16vec2 v=unpackFloat2x16(subgroupShuffle(packed,16u*(lane>>4u)+8u+((lane&15u)>>1u)));nx11[1]=(lane&1u)==0u?v.x:v.y;}
+}
+{
+uint packed=packFloat2x16(nr_blend_pair(sg,12u+(lane>>4u),2u*(lane&15u)));
+{f16vec2 v=unpackFloat2x16(subgroupShuffle(packed,16u*(lane>>4u)+0u+((lane&15u)>>1u)));nx10[2]=(lane&1u)==0u?v.x:v.y;}
+{f16vec2 v=unpackFloat2x16(subgroupShuffle(packed,16u*(lane>>4u)+8u+((lane&15u)>>1u)));nx11[2]=(lane&1u)==0u?v.x:v.y;}
+}
+{
+uint packed=packFloat2x16(nr_blend_pair(sg,14u+(lane>>4u),2u*(lane&15u)));
+{f16vec2 v=unpackFloat2x16(subgroupShuffle(packed,16u*(lane>>4u)+0u+((lane&15u)>>1u)));nx10[3]=(lane&1u)==0u?v.x:v.y;}
+{f16vec2 v=unpackFloat2x16(subgroupShuffle(packed,16u*(lane>>4u)+8u+((lane&15u)>>1u)));nx11[3]=(lane&1u)==0u?v.x:v.y;}
+}
+barrier(); // Retire all projection shK readers before later K overwrites.
+NRH_CH y00=NRH_CH(float16_t(0));
+NRH_CH y01=NRH_CH(float16_t(0));
+NRH_CH y10=NRH_CH(float16_t(0));
+NRH_CH y11=NRH_CH(float16_t(0));
+NRH_CH q00=NRH_CH(float16_t(0));
+NRH_CH q01=NRH_CH(float16_t(0));
+NRH_CH q10=NRH_CH(float16_t(0));
+NRH_CH q11=NRH_CH(float16_t(0));
+if(sg<4u) {
+NRH_A xa00; NRH_C ny00;
+{
+NRH_CH x=NRH_CH(float16_t(0)); if(!tok_oob_u) x=nx00;
+if(debug) coopMatStore(x,dbg,22528u+t0*32u+0u,32u,LROW);
+xa00=nrh_to_A(x);
+NRH_CH scale; coopMatLoad(scale,wb,uint(pc.p2.x)+8u,0u,LROW);
+ny00=nrh_widen_exact(x*scale);
+}
+NRH_A xa01; NRH_C ny01;
+{
+NRH_CH x=NRH_CH(float16_t(0)); if(!tok_oob_u) x=nx01;
+if(debug) coopMatStore(x,dbg,22528u+t0*32u+16u,32u,LROW);
+xa01=nrh_to_A(x);
+NRH_CH scale; coopMatLoad(scale,wb,uint(pc.p2.x)+24u,0u,LROW);
+ny01=nrh_widen_exact(x*scale);
+}
+NRH_A xa10; NRH_C ny10;
+{
+NRH_CH x=NRH_CH(float16_t(0)); if(!tok_oob_u) x=nx10;
+if(debug) coopMatStore(x,dbg,22528u+t0*32u+256u,32u,LROW);
+xa10=nrh_to_A(x);
+NRH_CH scale; coopMatLoad(scale,wb,uint(pc.p2.x)+8u,0u,LROW);
+ny10=nrh_widen_exact(x*scale);
+}
+NRH_A xa11; NRH_C ny11;
+{
+NRH_CH x=NRH_CH(float16_t(0)); if(!tok_oob_u) x=nx11;
+if(debug) coopMatStore(x,dbg,22528u+t0*32u+272u,32u,LROW);
+xa11=nrh_to_A(x);
+NRH_CH scale; coopMatLoad(scale,wb,uint(pc.p2.x)+24u,0u,LROW);
+ny11=nrh_widen_exact(x*scale);
+}
+
+{
+NRH_C ec0=NRH_C(0.0), ec1=NRH_C(0.0);
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.x)+0u,16u,LROW);
+ec0=coopMatMulAdd(xa00,w,ec0); ec1=coopMatMulAdd(xa10,w,ec1);
+}
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.x)+256u,16u,LROW);
+ec0=coopMatMulAdd(xa01,w,ec0); ec1=coopMatMulAdd(xa11,w,ec1);
+}
+NRH_CH e0=nrh_narrow(ec0);
+if(debug) coopMatStore(e0,dbg,t0*128u+0u,128u,LROW);
+e0[0]=nr_act_h(e0[0]);
+e0[1]=nr_act_h(e0[1]);
+e0[2]=nr_act_h(e0[2]);
+e0[3]=nr_act_h(e0[3]);
+NRH_A ea0=nrh_to_A(e0);
+NRH_CH e1=nrh_narrow(ec1);
+if(debug) coopMatStore(e1,dbg,t0*128u+1024u,128u,LROW);
+e1[0]=nr_act_h(e1[0]);
+e1[1]=nr_act_h(e1[1]);
+e1[2]=nr_act_h(e1[2]);
+e1[3]=nr_act_h(e1[3]);
+NRH_A ea1=nrh_to_A(e1);
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.y)+0u,16u,LROW);
+ny00=coopMatMulAdd(ea0,w,ny00); ny10=coopMatMulAdd(ea1,w,ny10);
+}
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.y)+2048u,16u,LROW);
+ny01=coopMatMulAdd(ea0,w,ny01); ny11=coopMatMulAdd(ea1,w,ny11);
+}
+}
+{
+NRH_C ec0=NRH_C(0.0), ec1=NRH_C(0.0);
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.x)+512u,16u,LROW);
+ec0=coopMatMulAdd(xa00,w,ec0); ec1=coopMatMulAdd(xa10,w,ec1);
+}
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.x)+768u,16u,LROW);
+ec0=coopMatMulAdd(xa01,w,ec0); ec1=coopMatMulAdd(xa11,w,ec1);
+}
+NRH_CH e0=nrh_narrow(ec0);
+if(debug) coopMatStore(e0,dbg,t0*128u+16u,128u,LROW);
+e0[0]=nr_act_h(e0[0]);
+e0[1]=nr_act_h(e0[1]);
+e0[2]=nr_act_h(e0[2]);
+e0[3]=nr_act_h(e0[3]);
+NRH_A ea0=nrh_to_A(e0);
+NRH_CH e1=nrh_narrow(ec1);
+if(debug) coopMatStore(e1,dbg,t0*128u+1040u,128u,LROW);
+e1[0]=nr_act_h(e1[0]);
+e1[1]=nr_act_h(e1[1]);
+e1[2]=nr_act_h(e1[2]);
+e1[3]=nr_act_h(e1[3]);
+NRH_A ea1=nrh_to_A(e1);
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.y)+256u,16u,LROW);
+ny00=coopMatMulAdd(ea0,w,ny00); ny10=coopMatMulAdd(ea1,w,ny10);
+}
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.y)+2304u,16u,LROW);
+ny01=coopMatMulAdd(ea0,w,ny01); ny11=coopMatMulAdd(ea1,w,ny11);
+}
+}
+{
+NRH_C ec0=NRH_C(0.0), ec1=NRH_C(0.0);
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.x)+1024u,16u,LROW);
+ec0=coopMatMulAdd(xa00,w,ec0); ec1=coopMatMulAdd(xa10,w,ec1);
+}
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.x)+1280u,16u,LROW);
+ec0=coopMatMulAdd(xa01,w,ec0); ec1=coopMatMulAdd(xa11,w,ec1);
+}
+NRH_CH e0=nrh_narrow(ec0);
+if(debug) coopMatStore(e0,dbg,t0*128u+32u,128u,LROW);
+e0[0]=nr_act_h(e0[0]);
+e0[1]=nr_act_h(e0[1]);
+e0[2]=nr_act_h(e0[2]);
+e0[3]=nr_act_h(e0[3]);
+NRH_A ea0=nrh_to_A(e0);
+NRH_CH e1=nrh_narrow(ec1);
+if(debug) coopMatStore(e1,dbg,t0*128u+1056u,128u,LROW);
+e1[0]=nr_act_h(e1[0]);
+e1[1]=nr_act_h(e1[1]);
+e1[2]=nr_act_h(e1[2]);
+e1[3]=nr_act_h(e1[3]);
+NRH_A ea1=nrh_to_A(e1);
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.y)+512u,16u,LROW);
+ny00=coopMatMulAdd(ea0,w,ny00); ny10=coopMatMulAdd(ea1,w,ny10);
+}
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.y)+2560u,16u,LROW);
+ny01=coopMatMulAdd(ea0,w,ny01); ny11=coopMatMulAdd(ea1,w,ny11);
+}
+}
+{
+NRH_C ec0=NRH_C(0.0), ec1=NRH_C(0.0);
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.x)+1536u,16u,LROW);
+ec0=coopMatMulAdd(xa00,w,ec0); ec1=coopMatMulAdd(xa10,w,ec1);
+}
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.x)+1792u,16u,LROW);
+ec0=coopMatMulAdd(xa01,w,ec0); ec1=coopMatMulAdd(xa11,w,ec1);
+}
+NRH_CH e0=nrh_narrow(ec0);
+if(debug) coopMatStore(e0,dbg,t0*128u+48u,128u,LROW);
+e0[0]=nr_act_h(e0[0]);
+e0[1]=nr_act_h(e0[1]);
+e0[2]=nr_act_h(e0[2]);
+e0[3]=nr_act_h(e0[3]);
+NRH_A ea0=nrh_to_A(e0);
+NRH_CH e1=nrh_narrow(ec1);
+if(debug) coopMatStore(e1,dbg,t0*128u+1072u,128u,LROW);
+e1[0]=nr_act_h(e1[0]);
+e1[1]=nr_act_h(e1[1]);
+e1[2]=nr_act_h(e1[2]);
+e1[3]=nr_act_h(e1[3]);
+NRH_A ea1=nrh_to_A(e1);
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.y)+768u,16u,LROW);
+ny00=coopMatMulAdd(ea0,w,ny00); ny10=coopMatMulAdd(ea1,w,ny10);
+}
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.y)+2816u,16u,LROW);
+ny01=coopMatMulAdd(ea0,w,ny01); ny11=coopMatMulAdd(ea1,w,ny11);
+}
+}
+{
+NRH_C ec0=NRH_C(0.0), ec1=NRH_C(0.0);
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.x)+2048u,16u,LROW);
+ec0=coopMatMulAdd(xa00,w,ec0); ec1=coopMatMulAdd(xa10,w,ec1);
+}
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.x)+2304u,16u,LROW);
+ec0=coopMatMulAdd(xa01,w,ec0); ec1=coopMatMulAdd(xa11,w,ec1);
+}
+NRH_CH e0=nrh_narrow(ec0);
+if(debug) coopMatStore(e0,dbg,t0*128u+64u,128u,LROW);
+e0[0]=nr_act_h(e0[0]);
+e0[1]=nr_act_h(e0[1]);
+e0[2]=nr_act_h(e0[2]);
+e0[3]=nr_act_h(e0[3]);
+NRH_A ea0=nrh_to_A(e0);
+NRH_CH e1=nrh_narrow(ec1);
+if(debug) coopMatStore(e1,dbg,t0*128u+1088u,128u,LROW);
+e1[0]=nr_act_h(e1[0]);
+e1[1]=nr_act_h(e1[1]);
+e1[2]=nr_act_h(e1[2]);
+e1[3]=nr_act_h(e1[3]);
+NRH_A ea1=nrh_to_A(e1);
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.y)+1024u,16u,LROW);
+ny00=coopMatMulAdd(ea0,w,ny00); ny10=coopMatMulAdd(ea1,w,ny10);
+}
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.y)+3072u,16u,LROW);
+ny01=coopMatMulAdd(ea0,w,ny01); ny11=coopMatMulAdd(ea1,w,ny11);
+}
+}
+{
+NRH_C ec0=NRH_C(0.0), ec1=NRH_C(0.0);
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.x)+2560u,16u,LROW);
+ec0=coopMatMulAdd(xa00,w,ec0); ec1=coopMatMulAdd(xa10,w,ec1);
+}
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.x)+2816u,16u,LROW);
+ec0=coopMatMulAdd(xa01,w,ec0); ec1=coopMatMulAdd(xa11,w,ec1);
+}
+NRH_CH e0=nrh_narrow(ec0);
+if(debug) coopMatStore(e0,dbg,t0*128u+80u,128u,LROW);
+e0[0]=nr_act_h(e0[0]);
+e0[1]=nr_act_h(e0[1]);
+e0[2]=nr_act_h(e0[2]);
+e0[3]=nr_act_h(e0[3]);
+NRH_A ea0=nrh_to_A(e0);
+NRH_CH e1=nrh_narrow(ec1);
+if(debug) coopMatStore(e1,dbg,t0*128u+1104u,128u,LROW);
+e1[0]=nr_act_h(e1[0]);
+e1[1]=nr_act_h(e1[1]);
+e1[2]=nr_act_h(e1[2]);
+e1[3]=nr_act_h(e1[3]);
+NRH_A ea1=nrh_to_A(e1);
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.y)+1280u,16u,LROW);
+ny00=coopMatMulAdd(ea0,w,ny00); ny10=coopMatMulAdd(ea1,w,ny10);
+}
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.y)+3328u,16u,LROW);
+ny01=coopMatMulAdd(ea0,w,ny01); ny11=coopMatMulAdd(ea1,w,ny11);
+}
+}
+{
+NRH_C ec0=NRH_C(0.0), ec1=NRH_C(0.0);
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.x)+3072u,16u,LROW);
+ec0=coopMatMulAdd(xa00,w,ec0); ec1=coopMatMulAdd(xa10,w,ec1);
+}
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.x)+3328u,16u,LROW);
+ec0=coopMatMulAdd(xa01,w,ec0); ec1=coopMatMulAdd(xa11,w,ec1);
+}
+NRH_CH e0=nrh_narrow(ec0);
+if(debug) coopMatStore(e0,dbg,t0*128u+96u,128u,LROW);
+e0[0]=nr_act_h(e0[0]);
+e0[1]=nr_act_h(e0[1]);
+e0[2]=nr_act_h(e0[2]);
+e0[3]=nr_act_h(e0[3]);
+NRH_A ea0=nrh_to_A(e0);
+NRH_CH e1=nrh_narrow(ec1);
+if(debug) coopMatStore(e1,dbg,t0*128u+1120u,128u,LROW);
+e1[0]=nr_act_h(e1[0]);
+e1[1]=nr_act_h(e1[1]);
+e1[2]=nr_act_h(e1[2]);
+e1[3]=nr_act_h(e1[3]);
+NRH_A ea1=nrh_to_A(e1);
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.y)+1536u,16u,LROW);
+ny00=coopMatMulAdd(ea0,w,ny00); ny10=coopMatMulAdd(ea1,w,ny10);
+}
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.y)+3584u,16u,LROW);
+ny01=coopMatMulAdd(ea0,w,ny01); ny11=coopMatMulAdd(ea1,w,ny11);
+}
+}
+{
+NRH_C ec0=NRH_C(0.0), ec1=NRH_C(0.0);
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.x)+3584u,16u,LROW);
+ec0=coopMatMulAdd(xa00,w,ec0); ec1=coopMatMulAdd(xa10,w,ec1);
+}
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.x)+3840u,16u,LROW);
+ec0=coopMatMulAdd(xa01,w,ec0); ec1=coopMatMulAdd(xa11,w,ec1);
+}
+NRH_CH e0=nrh_narrow(ec0);
+if(debug) coopMatStore(e0,dbg,t0*128u+112u,128u,LROW);
+e0[0]=nr_act_h(e0[0]);
+e0[1]=nr_act_h(e0[1]);
+e0[2]=nr_act_h(e0[2]);
+e0[3]=nr_act_h(e0[3]);
+NRH_A ea0=nrh_to_A(e0);
+NRH_CH e1=nrh_narrow(ec1);
+if(debug) coopMatStore(e1,dbg,t0*128u+1136u,128u,LROW);
+e1[0]=nr_act_h(e1[0]);
+e1[1]=nr_act_h(e1[1]);
+e1[2]=nr_act_h(e1[2]);
+e1[3]=nr_act_h(e1[3]);
+NRH_A ea1=nrh_to_A(e1);
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.y)+1792u,16u,LROW);
+ny00=coopMatMulAdd(ea0,w,ny00); ny10=coopMatMulAdd(ea1,w,ny10);
+}
+{
+NRH_B w; coopMatLoad(w,wb,uint(pc.p1.y)+3840u,16u,LROW);
+ny01=coopMatMulAdd(ea0,w,ny01); ny11=coopMatMulAdd(ea1,w,ny11);
+}
+}
+
+y00=nrh_narrow(ny00);
+if(debug) coopMatStore(y00,dbg,8192u+(t0+0u)*32u+0u,32u,LROW);
+NRH_A ya00=nrh_to_A(y00);
+y01=nrh_narrow(ny01);
+if(debug) coopMatStore(y01,dbg,8192u+(t0+0u)*32u+16u,32u,LROW);
+NRH_A ya01=nrh_to_A(y01);
+y10=nrh_narrow(ny10);
+if(debug) coopMatStore(y10,dbg,8192u+(t0+8u)*32u+0u,32u,LROW);
+NRH_A ya10=nrh_to_A(y10);
+y11=nrh_narrow(ny11);
+if(debug) coopMatStore(y11,dbg,8192u+(t0+8u)*32u+16u,32u,LROW);
+NRH_A ya11=nrh_to_A(y11);
+NRH_CH k00;
+NRH_CH k01;
+NRH_CH k10;
+NRH_CH k11;
+NRH_CH v00;
+NRH_CH v01;
+NRH_CH v10;
+NRH_CH v11;
+{
+NRH_C z00=NRH_C(0.0);
+NRH_C z01=NRH_C(0.0);
+NRH_C z10=NRH_C(0.0);
+NRH_C z11=NRH_C(0.0);
+{
+NRH_B w;coopMatLoad(w,wb,uint(pc.p1.z)+0u,16u,LROW);
+z00=coopMatMulAdd(ya00,w,z00);
+z10=coopMatMulAdd(ya10,w,z10);
+}
+{
+NRH_B w;coopMatLoad(w,wb,uint(pc.p1.z)+512u,16u,LROW);
+z01=coopMatMulAdd(ya00,w,z01);
+z11=coopMatMulAdd(ya10,w,z11);
+}
+{
+NRH_B w;coopMatLoad(w,wb,uint(pc.p1.z)+256u,16u,LROW);
+z00=coopMatMulAdd(ya01,w,z00);
+z10=coopMatMulAdd(ya11,w,z10);
+}
+{
+NRH_B w;coopMatLoad(w,wb,uint(pc.p1.z)+768u,16u,LROW);
+z01=coopMatMulAdd(ya01,w,z01);
+z11=coopMatMulAdd(ya11,w,z11);
+}
+q00=nrh_narrow(z00);
+q01=nrh_narrow(z01);
+q10=nrh_narrow(z10);
+q11=nrh_narrow(z11);
+}
+{
+NRH_C z00=NRH_C(0.0);
+NRH_C z01=NRH_C(0.0);
+NRH_C z10=NRH_C(0.0);
+NRH_C z11=NRH_C(0.0);
+{
+NRH_B w;coopMatLoad(w,wb,uint(pc.p1.z)+1024u,16u,LROW);
+z00=coopMatMulAdd(ya00,w,z00);
+z10=coopMatMulAdd(ya10,w,z10);
+}
+{
+NRH_B w;coopMatLoad(w,wb,uint(pc.p1.z)+1536u,16u,LROW);
+z01=coopMatMulAdd(ya00,w,z01);
+z11=coopMatMulAdd(ya10,w,z11);
+}
+{
+NRH_B w;coopMatLoad(w,wb,uint(pc.p1.z)+1280u,16u,LROW);
+z00=coopMatMulAdd(ya01,w,z00);
+z10=coopMatMulAdd(ya11,w,z10);
+}
+{
+NRH_B w;coopMatLoad(w,wb,uint(pc.p1.z)+1792u,16u,LROW);
+z01=coopMatMulAdd(ya01,w,z01);
+z11=coopMatMulAdd(ya11,w,z11);
+}
+k00=nrh_narrow(z00);
+k01=nrh_narrow(z01);
+k10=nrh_narrow(z10);
+k11=nrh_narrow(z11);
+}
+{
+NRH_C z00=NRH_C(0.0);
+NRH_C z01=NRH_C(0.0);
+NRH_C z10=NRH_C(0.0);
+NRH_C z11=NRH_C(0.0);
+{
+NRH_B w;coopMatLoad(w,wb,uint(pc.p1.z)+2048u,16u,LROW);
+z00=coopMatMulAdd(ya00,w,z00);
+z10=coopMatMulAdd(ya10,w,z10);
+}
+{
+NRH_B w;coopMatLoad(w,wb,uint(pc.p1.z)+2560u,16u,LROW);
+z01=coopMatMulAdd(ya00,w,z01);
+z11=coopMatMulAdd(ya10,w,z11);
+}
+{
+NRH_B w;coopMatLoad(w,wb,uint(pc.p1.z)+2304u,16u,LROW);
+z00=coopMatMulAdd(ya01,w,z00);
+z10=coopMatMulAdd(ya11,w,z10);
+}
+{
+NRH_B w;coopMatLoad(w,wb,uint(pc.p1.z)+2816u,16u,LROW);
+z01=coopMatMulAdd(ya01,w,z01);
+z11=coopMatMulAdd(ya11,w,z11);
+}
+v00=nrh_narrow(z00);
+v01=nrh_narrow(z01);
+v10=nrh_narrow(z10);
+v11=nrh_narrow(z11);
+}
+float16_t headscale=float16_t(fb[uint(pc.p2.z)]);
+{
+f16vec2 n=full_norm(q00[0],q01[0],k00[0],k01[0]);
+precise float16_t qr0=q00[0]*n.x;qr0=qr0*headscale;q00[0]=qr0;k00[0]=k00[0]*n.y;
+precise float16_t qr1=q01[0]*n.x;qr1=qr1*headscale;q01[0]=qr1;k01[0]=k01[0]*n.y;
+}
+{
+f16vec2 n=full_norm(q00[1],q01[1],k00[1],k01[1]);
+precise float16_t qr0=q00[1]*n.x;qr0=qr0*headscale;q00[1]=qr0;k00[1]=k00[1]*n.y;
+precise float16_t qr1=q01[1]*n.x;qr1=qr1*headscale;q01[1]=qr1;k01[1]=k01[1]*n.y;
+}
+{
+f16vec2 n=full_norm(q00[2],q01[2],k00[2],k01[2]);
+precise float16_t qr0=q00[2]*n.x;qr0=qr0*headscale;q00[2]=qr0;k00[2]=k00[2]*n.y;
+precise float16_t qr1=q01[2]*n.x;qr1=qr1*headscale;q01[2]=qr1;k01[2]=k01[2]*n.y;
+}
+{
+f16vec2 n=full_norm(q00[3],q01[3],k00[3],k01[3]);
+precise float16_t qr0=q00[3]*n.x;qr0=qr0*headscale;q00[3]=qr0;k00[3]=k00[3]*n.y;
+precise float16_t qr1=q01[3]*n.x;qr1=qr1*headscale;q01[3]=qr1;k01[3]=k01[3]*n.y;
+}
+coopMatStore(k00,shK,0u+sg*256u+0u,16u,LCOL);
+coopMatStore(v00,shV,sg*512u+0u,16u,LROW);
+if(debug) coopMatStore(q00,dbg,10240u+(t0+0u)*32u+0u,32u,LROW);
+if(debug) coopMatStore(k00,dbg,12288u+(t0+0u)*32u+0u,32u,LROW);
+coopMatStore(k01,shK,1024u+sg*256u+0u,16u,LCOL);
+coopMatStore(v01,shV,sg*512u+256u,16u,LROW);
+if(debug) coopMatStore(q01,dbg,10240u+(t0+0u)*32u+16u,32u,LROW);
+if(debug) coopMatStore(k01,dbg,12288u+(t0+0u)*32u+16u,32u,LROW);
+{
+f16vec2 n=full_norm(q10[0],q11[0],k10[0],k11[0]);
+precise float16_t qr0=q10[0]*n.x;qr0=qr0*headscale;q10[0]=qr0;k10[0]=k10[0]*n.y;
+precise float16_t qr1=q11[0]*n.x;qr1=qr1*headscale;q11[0]=qr1;k11[0]=k11[0]*n.y;
+}
+{
+f16vec2 n=full_norm(q10[1],q11[1],k10[1],k11[1]);
+precise float16_t qr0=q10[1]*n.x;qr0=qr0*headscale;q10[1]=qr0;k10[1]=k10[1]*n.y;
+precise float16_t qr1=q11[1]*n.x;qr1=qr1*headscale;q11[1]=qr1;k11[1]=k11[1]*n.y;
+}
+{
+f16vec2 n=full_norm(q10[2],q11[2],k10[2],k11[2]);
+precise float16_t qr0=q10[2]*n.x;qr0=qr0*headscale;q10[2]=qr0;k10[2]=k10[2]*n.y;
+precise float16_t qr1=q11[2]*n.x;qr1=qr1*headscale;q11[2]=qr1;k11[2]=k11[2]*n.y;
+}
+{
+f16vec2 n=full_norm(q10[3],q11[3],k10[3],k11[3]);
+precise float16_t qr0=q10[3]*n.x;qr0=qr0*headscale;q10[3]=qr0;k10[3]=k10[3]*n.y;
+precise float16_t qr1=q11[3]*n.x;qr1=qr1*headscale;q11[3]=qr1;k11[3]=k11[3]*n.y;
+}
+coopMatStore(k10,shK,0u+sg*256u+8u,16u,LCOL);
+coopMatStore(v10,shV,sg*512u+128u,16u,LROW);
+if(debug) coopMatStore(q10,dbg,10240u+(t0+8u)*32u+0u,32u,LROW);
+if(debug) coopMatStore(k10,dbg,12288u+(t0+8u)*32u+0u,32u,LROW);
+coopMatStore(k11,shK,1024u+sg*256u+8u,16u,LCOL);
+coopMatStore(v11,shV,sg*512u+384u,16u,LROW);
+if(debug) coopMatStore(q11,dbg,10240u+(t0+8u)*32u+16u,32u,LROW);
+if(debug) coopMatStore(k11,dbg,12288u+(t0+8u)*32u+16u,32u,LROW);
+}
+barrier();
+if(sg<4u) {
+NRH_A qa00=nrh_to_A(q00);
+NRH_A qa01=nrh_to_A(q01);
+NRH_A qa10=nrh_to_A(q10);
+NRH_A qa11=nrh_to_A(q11);
+NRH_CH p00,p10;
+{
+NRH_C sc0=NRH_C(0.0),sc1=NRH_C(0.0);
+{
+NRH_B b;coopMatLoad(b,shK,0u,16u,LROW);
+sc0=coopMatMulAdd(qa00,b,sc0);sc1=coopMatMulAdd(qa10,b,sc1);
+}
+{
+NRH_B b;coopMatLoad(b,shK,1024u,16u,LROW);
+sc0=coopMatMulAdd(qa01,b,sc0);sc1=coopMatMulAdd(qa11,b,sc1);
+}
+{
+NRH_C bias;coopMatLoad(bias,fb,uint(pc.p2.w)+(t0+0u)*64u+0u,64u,LROW);
+precise float biased0=sc0[0]+bias[0];sc0[0]=biased0;
+precise float biased1=sc0[1]+bias[1];sc0[1]=biased1;
+precise float biased2=sc0[2]+bias[2];sc0[2]=biased2;
+precise float biased3=sc0[3]+bias[3];sc0[3]=biased3;
+p00=nrh_narrow(sc0);
+{f16vec2 e=nr_exp_h2(f16vec2(p00[0],p00[1]));p00[0]=e.x;p00[1]=e.y;}
+{f16vec2 e=nr_exp_h2(f16vec2(p00[2],p00[3]));p00[2]=e.x;p00[3]=e.y;}
+}
+{
+NRH_C bias;coopMatLoad(bias,fb,uint(pc.p2.w)+(t0+8u)*64u+0u,64u,LROW);
+precise float biased0=sc1[0]+bias[0];sc1[0]=biased0;
+precise float biased1=sc1[1]+bias[1];sc1[1]=biased1;
+precise float biased2=sc1[2]+bias[2];sc1[2]=biased2;
+precise float biased3=sc1[3]+bias[3];sc1[3]=biased3;
+p10=nrh_narrow(sc1);
+{f16vec2 e=nr_exp_h2(f16vec2(p10[0],p10[1]));p10[0]=e.x;p10[1]=e.y;}
+{f16vec2 e=nr_exp_h2(f16vec2(p10[2],p10[3]));p10[2]=e.x;p10[3]=e.y;}
+}
+}
+NRH_CH p01,p11;
+{
+NRH_C sc0=NRH_C(0.0),sc1=NRH_C(0.0);
+{
+NRH_B b;coopMatLoad(b,shK,256u,16u,LROW);
+sc0=coopMatMulAdd(qa00,b,sc0);sc1=coopMatMulAdd(qa10,b,sc1);
+}
+{
+NRH_B b;coopMatLoad(b,shK,1280u,16u,LROW);
+sc0=coopMatMulAdd(qa01,b,sc0);sc1=coopMatMulAdd(qa11,b,sc1);
+}
+{
+NRH_C bias;coopMatLoad(bias,fb,uint(pc.p2.w)+(t0+0u)*64u+16u,64u,LROW);
+precise float biased0=sc0[0]+bias[0];sc0[0]=biased0;
+precise float biased1=sc0[1]+bias[1];sc0[1]=biased1;
+precise float biased2=sc0[2]+bias[2];sc0[2]=biased2;
+precise float biased3=sc0[3]+bias[3];sc0[3]=biased3;
+p01=nrh_narrow(sc0);
+{f16vec2 e=nr_exp_h2(f16vec2(p01[0],p01[1]));p01[0]=e.x;p01[1]=e.y;}
+{f16vec2 e=nr_exp_h2(f16vec2(p01[2],p01[3]));p01[2]=e.x;p01[3]=e.y;}
+}
+{
+NRH_C bias;coopMatLoad(bias,fb,uint(pc.p2.w)+(t0+8u)*64u+16u,64u,LROW);
+precise float biased0=sc1[0]+bias[0];sc1[0]=biased0;
+precise float biased1=sc1[1]+bias[1];sc1[1]=biased1;
+precise float biased2=sc1[2]+bias[2];sc1[2]=biased2;
+precise float biased3=sc1[3]+bias[3];sc1[3]=biased3;
+p11=nrh_narrow(sc1);
+{f16vec2 e=nr_exp_h2(f16vec2(p11[0],p11[1]));p11[0]=e.x;p11[1]=e.y;}
+{f16vec2 e=nr_exp_h2(f16vec2(p11[2],p11[3]));p11[2]=e.x;p11[3]=e.y;}
+}
+}
+NRH_CH p02,p12;
+{
+NRH_C sc0=NRH_C(0.0),sc1=NRH_C(0.0);
+{
+NRH_B b;coopMatLoad(b,shK,512u,16u,LROW);
+sc0=coopMatMulAdd(qa00,b,sc0);sc1=coopMatMulAdd(qa10,b,sc1);
+}
+{
+NRH_B b;coopMatLoad(b,shK,1536u,16u,LROW);
+sc0=coopMatMulAdd(qa01,b,sc0);sc1=coopMatMulAdd(qa11,b,sc1);
+}
+{
+NRH_C bias;coopMatLoad(bias,fb,uint(pc.p2.w)+(t0+0u)*64u+32u,64u,LROW);
+precise float biased0=sc0[0]+bias[0];sc0[0]=biased0;
+precise float biased1=sc0[1]+bias[1];sc0[1]=biased1;
+precise float biased2=sc0[2]+bias[2];sc0[2]=biased2;
+precise float biased3=sc0[3]+bias[3];sc0[3]=biased3;
+p02=nrh_narrow(sc0);
+{f16vec2 e=nr_exp_h2(f16vec2(p02[0],p02[1]));p02[0]=e.x;p02[1]=e.y;}
+{f16vec2 e=nr_exp_h2(f16vec2(p02[2],p02[3]));p02[2]=e.x;p02[3]=e.y;}
+}
+{
+NRH_C bias;coopMatLoad(bias,fb,uint(pc.p2.w)+(t0+8u)*64u+32u,64u,LROW);
+precise float biased0=sc1[0]+bias[0];sc1[0]=biased0;
+precise float biased1=sc1[1]+bias[1];sc1[1]=biased1;
+precise float biased2=sc1[2]+bias[2];sc1[2]=biased2;
+precise float biased3=sc1[3]+bias[3];sc1[3]=biased3;
+p12=nrh_narrow(sc1);
+{f16vec2 e=nr_exp_h2(f16vec2(p12[0],p12[1]));p12[0]=e.x;p12[1]=e.y;}
+{f16vec2 e=nr_exp_h2(f16vec2(p12[2],p12[3]));p12[2]=e.x;p12[3]=e.y;}
+}
+}
+NRH_CH p03,p13;
+{
+NRH_C sc0=NRH_C(0.0),sc1=NRH_C(0.0);
+{
+NRH_B b;coopMatLoad(b,shK,768u,16u,LROW);
+sc0=coopMatMulAdd(qa00,b,sc0);sc1=coopMatMulAdd(qa10,b,sc1);
+}
+{
+NRH_B b;coopMatLoad(b,shK,1792u,16u,LROW);
+sc0=coopMatMulAdd(qa01,b,sc0);sc1=coopMatMulAdd(qa11,b,sc1);
+}
+{
+NRH_C bias;coopMatLoad(bias,fb,uint(pc.p2.w)+(t0+0u)*64u+48u,64u,LROW);
+precise float biased0=sc0[0]+bias[0];sc0[0]=biased0;
+precise float biased1=sc0[1]+bias[1];sc0[1]=biased1;
+precise float biased2=sc0[2]+bias[2];sc0[2]=biased2;
+precise float biased3=sc0[3]+bias[3];sc0[3]=biased3;
+p03=nrh_narrow(sc0);
+{f16vec2 e=nr_exp_h2(f16vec2(p03[0],p03[1]));p03[0]=e.x;p03[1]=e.y;}
+{f16vec2 e=nr_exp_h2(f16vec2(p03[2],p03[3]));p03[2]=e.x;p03[3]=e.y;}
+}
+{
+NRH_C bias;coopMatLoad(bias,fb,uint(pc.p2.w)+(t0+8u)*64u+48u,64u,LROW);
+precise float biased0=sc1[0]+bias[0];sc1[0]=biased0;
+precise float biased1=sc1[1]+bias[1];sc1[1]=biased1;
+precise float biased2=sc1[2]+bias[2];sc1[2]=biased2;
+precise float biased3=sc1[3]+bias[3];sc1[3]=biased3;
+p13=nrh_narrow(sc1);
+{f16vec2 e=nr_exp_h2(f16vec2(p13[0],p13[1]));p13[0]=e.x;p13[1]=e.y;}
+{f16vec2 e=nr_exp_h2(f16vec2(p13[2],p13[3]));p13[2]=e.x;p13[3]=e.y;}
+}
+}
+{
+precise f16vec2 d=f16vec2(float16_t(0));
+{
+f16vec2 x=f16vec2(p00[0],p00[1]);
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(x),8u));
+bool lower=(lane&8u)==0u;precise f16vec2 pair=(lower?x:peer)+(lower?peer:x);d=d+pair;
+}
+{
+f16vec2 x=f16vec2(p01[0],p01[1]);
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(x),8u));
+bool lower=(lane&8u)==0u;precise f16vec2 pair=(lower?x:peer)+(lower?peer:x);d=d+pair;
+}
+{
+f16vec2 x=f16vec2(p02[0],p02[1]);
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(x),8u));
+bool lower=(lane&8u)==0u;precise f16vec2 pair=(lower?x:peer)+(lower?peer:x);d=d+pair;
+}
+{
+f16vec2 x=f16vec2(p03[0],p03[1]);
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(x),8u));
+bool lower=(lane&8u)==0u;precise f16vec2 pair=(lower?x:peer)+(lower?peer:x);d=d+pair;
+}
+{
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(d),2u));bool lower=(lane&2u)==0u;d=(lower?d:peer)+(lower?peer:d);
+}
+{
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(d),4u));bool lower=(lane&4u)==0u;d=(lower?d:peer)+(lower?peer:d);
+}
+{
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(d),1u));bool lower=(lane&1u)==0u;d=(lower?d:peer)+(lower?peer:d);
+}
+f16vec2 inv=f16vec2(float16_t(1.0/max(float(d.x),6.103515625e-05)),float16_t(1.0/max(float(d.y),6.103515625e-05)));
+p00[0]=p00[0]*inv.x;p00[1]=p00[1]*inv.y;
+p01[0]=p01[0]*inv.x;p01[1]=p01[1]*inv.y;
+p02[0]=p02[0]*inv.x;p02[1]=p02[1]*inv.y;
+p03[0]=p03[0]*inv.x;p03[1]=p03[1]*inv.y;
+}
+{
+precise f16vec2 d=f16vec2(float16_t(0));
+{
+f16vec2 x=f16vec2(p00[2],p00[3]);
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(x),8u));
+bool lower=(lane&8u)==0u;precise f16vec2 pair=(lower?x:peer)+(lower?peer:x);d=d+pair;
+}
+{
+f16vec2 x=f16vec2(p01[2],p01[3]);
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(x),8u));
+bool lower=(lane&8u)==0u;precise f16vec2 pair=(lower?x:peer)+(lower?peer:x);d=d+pair;
+}
+{
+f16vec2 x=f16vec2(p02[2],p02[3]);
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(x),8u));
+bool lower=(lane&8u)==0u;precise f16vec2 pair=(lower?x:peer)+(lower?peer:x);d=d+pair;
+}
+{
+f16vec2 x=f16vec2(p03[2],p03[3]);
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(x),8u));
+bool lower=(lane&8u)==0u;precise f16vec2 pair=(lower?x:peer)+(lower?peer:x);d=d+pair;
+}
+{
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(d),2u));bool lower=(lane&2u)==0u;d=(lower?d:peer)+(lower?peer:d);
+}
+{
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(d),4u));bool lower=(lane&4u)==0u;d=(lower?d:peer)+(lower?peer:d);
+}
+{
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(d),1u));bool lower=(lane&1u)==0u;d=(lower?d:peer)+(lower?peer:d);
+}
+f16vec2 inv=f16vec2(float16_t(1.0/max(float(d.x),6.103515625e-05)),float16_t(1.0/max(float(d.y),6.103515625e-05)));
+p00[2]=p00[2]*inv.x;p00[3]=p00[3]*inv.y;
+p01[2]=p01[2]*inv.x;p01[3]=p01[3]*inv.y;
+p02[2]=p02[2]*inv.x;p02[3]=p02[3]*inv.y;
+p03[2]=p03[2]*inv.x;p03[3]=p03[3]*inv.y;
+}
+if(debug) coopMatStore(p00,dbg,14336u+(t0+0u)*64u+0u,64u,LROW);
+if(debug) coopMatStore(p01,dbg,14336u+(t0+0u)*64u+16u,64u,LROW);
+if(debug) coopMatStore(p02,dbg,14336u+(t0+0u)*64u+32u,64u,LROW);
+if(debug) coopMatStore(p03,dbg,14336u+(t0+0u)*64u+48u,64u,LROW);
+{
+precise f16vec2 d=f16vec2(float16_t(0));
+{
+f16vec2 x=f16vec2(p10[0],p10[1]);
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(x),8u));
+bool lower=(lane&8u)==0u;precise f16vec2 pair=(lower?x:peer)+(lower?peer:x);d=d+pair;
+}
+{
+f16vec2 x=f16vec2(p11[0],p11[1]);
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(x),8u));
+bool lower=(lane&8u)==0u;precise f16vec2 pair=(lower?x:peer)+(lower?peer:x);d=d+pair;
+}
+{
+f16vec2 x=f16vec2(p12[0],p12[1]);
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(x),8u));
+bool lower=(lane&8u)==0u;precise f16vec2 pair=(lower?x:peer)+(lower?peer:x);d=d+pair;
+}
+{
+f16vec2 x=f16vec2(p13[0],p13[1]);
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(x),8u));
+bool lower=(lane&8u)==0u;precise f16vec2 pair=(lower?x:peer)+(lower?peer:x);d=d+pair;
+}
+{
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(d),2u));bool lower=(lane&2u)==0u;d=(lower?d:peer)+(lower?peer:d);
+}
+{
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(d),4u));bool lower=(lane&4u)==0u;d=(lower?d:peer)+(lower?peer:d);
+}
+{
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(d),1u));bool lower=(lane&1u)==0u;d=(lower?d:peer)+(lower?peer:d);
+}
+f16vec2 inv=f16vec2(float16_t(1.0/max(float(d.x),6.103515625e-05)),float16_t(1.0/max(float(d.y),6.103515625e-05)));
+p10[0]=p10[0]*inv.x;p10[1]=p10[1]*inv.y;
+p11[0]=p11[0]*inv.x;p11[1]=p11[1]*inv.y;
+p12[0]=p12[0]*inv.x;p12[1]=p12[1]*inv.y;
+p13[0]=p13[0]*inv.x;p13[1]=p13[1]*inv.y;
+}
+{
+precise f16vec2 d=f16vec2(float16_t(0));
+{
+f16vec2 x=f16vec2(p10[2],p10[3]);
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(x),8u));
+bool lower=(lane&8u)==0u;precise f16vec2 pair=(lower?x:peer)+(lower?peer:x);d=d+pair;
+}
+{
+f16vec2 x=f16vec2(p11[2],p11[3]);
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(x),8u));
+bool lower=(lane&8u)==0u;precise f16vec2 pair=(lower?x:peer)+(lower?peer:x);d=d+pair;
+}
+{
+f16vec2 x=f16vec2(p12[2],p12[3]);
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(x),8u));
+bool lower=(lane&8u)==0u;precise f16vec2 pair=(lower?x:peer)+(lower?peer:x);d=d+pair;
+}
+{
+f16vec2 x=f16vec2(p13[2],p13[3]);
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(x),8u));
+bool lower=(lane&8u)==0u;precise f16vec2 pair=(lower?x:peer)+(lower?peer:x);d=d+pair;
+}
+{
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(d),2u));bool lower=(lane&2u)==0u;d=(lower?d:peer)+(lower?peer:d);
+}
+{
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(d),4u));bool lower=(lane&4u)==0u;d=(lower?d:peer)+(lower?peer:d);
+}
+{
+f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(d),1u));bool lower=(lane&1u)==0u;d=(lower?d:peer)+(lower?peer:d);
+}
+f16vec2 inv=f16vec2(float16_t(1.0/max(float(d.x),6.103515625e-05)),float16_t(1.0/max(float(d.y),6.103515625e-05)));
+p10[2]=p10[2]*inv.x;p10[3]=p10[3]*inv.y;
+p11[2]=p11[2]*inv.x;p11[3]=p11[3]*inv.y;
+p12[2]=p12[2]*inv.x;p12[3]=p12[3]*inv.y;
+p13[2]=p13[2]*inv.x;p13[3]=p13[3]*inv.y;
+}
+if(debug) coopMatStore(p10,dbg,14336u+(t0+8u)*64u+0u,64u,LROW);
+if(debug) coopMatStore(p11,dbg,14336u+(t0+8u)*64u+16u,64u,LROW);
+if(debug) coopMatStore(p12,dbg,14336u+(t0+8u)*64u+32u,64u,LROW);
+if(debug) coopMatStore(p13,dbg,14336u+(t0+8u)*64u+48u,64u,LROW);
+NRH_C tc00=NRH_C(0.0);
+NRH_C tc01=NRH_C(0.0);
+NRH_C tc10=NRH_C(0.0);
+NRH_C tc11=NRH_C(0.0);
+{
+NRH_A a0=nrh_to_A(p00);
+NRH_A a1=nrh_to_A(p10);
+{
+NRH_B b;coopMatLoad(b,shV,0u,16u,LROW);
+tc00=coopMatMulAdd(a0,b,tc00);
+tc10=coopMatMulAdd(a1,b,tc10);
+}
+{
+NRH_B b;coopMatLoad(b,shV,256u,16u,LROW);
+tc01=coopMatMulAdd(a0,b,tc01);
+tc11=coopMatMulAdd(a1,b,tc11);
+}
+}
+{
+NRH_A a0=nrh_to_A(p01);
+NRH_A a1=nrh_to_A(p11);
+{
+NRH_B b;coopMatLoad(b,shV,512u,16u,LROW);
+tc00=coopMatMulAdd(a0,b,tc00);
+tc10=coopMatMulAdd(a1,b,tc10);
+}
+{
+NRH_B b;coopMatLoad(b,shV,768u,16u,LROW);
+tc01=coopMatMulAdd(a0,b,tc01);
+tc11=coopMatMulAdd(a1,b,tc11);
+}
+}
+{
+NRH_A a0=nrh_to_A(p02);
+NRH_A a1=nrh_to_A(p12);
+{
+NRH_B b;coopMatLoad(b,shV,1024u,16u,LROW);
+tc00=coopMatMulAdd(a0,b,tc00);
+tc10=coopMatMulAdd(a1,b,tc10);
+}
+{
+NRH_B b;coopMatLoad(b,shV,1280u,16u,LROW);
+tc01=coopMatMulAdd(a0,b,tc01);
+tc11=coopMatMulAdd(a1,b,tc11);
+}
+}
+{
+NRH_A a0=nrh_to_A(p03);
+NRH_A a1=nrh_to_A(p13);
+{
+NRH_B b;coopMatLoad(b,shV,1536u,16u,LROW);
+tc00=coopMatMulAdd(a0,b,tc00);
+tc10=coopMatMulAdd(a1,b,tc10);
+}
+{
+NRH_B b;coopMatLoad(b,shV,1792u,16u,LROW);
+tc01=coopMatMulAdd(a0,b,tc01);
+tc11=coopMatMulAdd(a1,b,tc11);
+}
+}
+NRH_CH ctx00=nrh_narrow(tc00);
+if(debug) coopMatStore(ctx00,dbg,18432u+(t0+0u)*32u+0u,32u,LROW);
+NRH_A ca00=nrh_to_A(ctx00);
+NRH_C oc00;
+{
+NRH_CH scale;coopMatLoad(scale,wb,uint(pc.p2.y)+0u,0u,LROW);oc00=nrh_widen_exact(y00*scale);
+}
+NRH_CH ctx01=nrh_narrow(tc01);
+if(debug) coopMatStore(ctx01,dbg,18432u+(t0+0u)*32u+16u,32u,LROW);
+NRH_A ca01=nrh_to_A(ctx01);
+NRH_C oc01;
+{
+NRH_CH scale;coopMatLoad(scale,wb,uint(pc.p2.y)+16u,0u,LROW);oc01=nrh_widen_exact(y01*scale);
+}
+NRH_CH ctx10=nrh_narrow(tc10);
+if(debug) coopMatStore(ctx10,dbg,18432u+(t0+8u)*32u+0u,32u,LROW);
+NRH_A ca10=nrh_to_A(ctx10);
+NRH_C oc10;
+{
+NRH_CH scale;coopMatLoad(scale,wb,uint(pc.p2.y)+0u,0u,LROW);oc10=nrh_widen_exact(y10*scale);
+}
+NRH_CH ctx11=nrh_narrow(tc11);
+if(debug) coopMatStore(ctx11,dbg,18432u+(t0+8u)*32u+16u,32u,LROW);
+NRH_A ca11=nrh_to_A(ctx11);
+NRH_C oc11;
+{
+NRH_CH scale;coopMatLoad(scale,wb,uint(pc.p2.y)+16u,0u,LROW);oc11=nrh_widen_exact(y11*scale);
+}
+{
+NRH_B w;coopMatLoad(w,wb,uint(pc.p1.w)+0u,16u,LROW);
+oc00=coopMatMulAdd(ca00,w,oc00);
+oc10=coopMatMulAdd(ca10,w,oc10);
+}
+{
+NRH_B w;coopMatLoad(w,wb,uint(pc.p1.w)+512u,16u,LROW);
+oc01=coopMatMulAdd(ca00,w,oc01);
+oc11=coopMatMulAdd(ca10,w,oc11);
+}
+{
+NRH_B w;coopMatLoad(w,wb,uint(pc.p1.w)+256u,16u,LROW);
+oc00=coopMatMulAdd(ca01,w,oc00);
+NRH_CH o0=nrh_narrow(oc00);
+if(debug) coopMatStore(o0,dbg,20480u+(t0+0u)*32u+0u,32u,LROW);
+if(!tok_oob_u) coopMatStore(o0,imgout,tok_base+0u,16u,LROW);
+oc10=coopMatMulAdd(ca11,w,oc10);
+NRH_CH o1=nrh_narrow(oc10);
+if(debug) coopMatStore(o1,dbg,20480u+(t0+8u)*32u+0u,32u,LROW);
+if(!tok_oob_u) coopMatStore(o1,imgout,tok_base+128u,16u,LROW);
+}
+{
+NRH_B w;coopMatLoad(w,wb,uint(pc.p1.w)+768u,16u,LROW);
+oc01=coopMatMulAdd(ca01,w,oc01);
+NRH_CH o0=nrh_narrow(oc01);
+if(debug) coopMatStore(o0,dbg,20480u+(t0+0u)*32u+16u,32u,LROW);
+if(!tok_oob_u) coopMatStore(o0,imgout,tok_base+256u,16u,LROW);
+oc11=coopMatMulAdd(ca11,w,oc11);
+NRH_CH o1=nrh_narrow(oc11);
+if(debug) coopMatStore(o1,dbg,20480u+(t0+8u)*32u+16u,32u,LROW);
+if(!tok_oob_u) coopMatStore(o1,imgout,tok_base+384u,16u,LROW);
+}
+}
+}
+void main(){nrf2_project_and_blend();nr_body_stage();}

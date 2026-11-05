@@ -1,0 +1,73 @@
+#version 450
+// Edge-directed upscale for the NR result, in the spirit of FidelityFX FSR1 EASU.
+//
+// Why this exists: when the network runs below the render resolution (working scale < 1) its
+// answer has to be enlarged back. A bilinear enlarge loses exactly the high frequency the model
+// was supposed to preserve - measured on a 1024x576 network feeding a 1280x720 frame: -25% high
+// frequency on fine material, versus the frame the network never touched. FSR1 solves this with
+// an edge-directed 12-tap filter; this is a compact version of the same idea:
+//
+//   1. the four nearest taps bound the result (anti-ringing),
+//   2. the diagonal gradients decide which way the edge runs,
+//   3. an anisotropic distance reaches further along the edge than across it.
+//
+// Inputs are the model-resolution image and the frame size; nothing here knows about the plan.
+layout(local_size_x = 8, local_size_y = 8, local_size_z = 1) in;
+
+layout(push_constant) uniform Push {
+    uint src_w;   // model resolution
+    uint src_h;
+    uint dst_w;   // frame resolution
+    uint dst_h;
+} pc;
+
+layout(binding = 0) uniform sampler2D src;
+layout(binding = 1, rgba16f) uniform writeonly image2D dst;
+
+vec3 tap(ivec2 p) {
+    ivec2 hi = ivec2(int(pc.src_w), int(pc.src_h)) - 1;
+    return texelFetch(src, clamp(p, ivec2(0), hi), 0).rgb;
+}
+
+void main() {
+    ivec2 xy = ivec2(gl_GlobalInvocationID.xy);
+    if (xy.x >= int(pc.dst_w) || xy.y >= int(pc.dst_h)) return;
+
+    // Output pixel centre, in source pixel space.
+    vec2 s = vec2(pc.src_w, pc.src_h) / vec2(pc.dst_w, pc.dst_h);
+    vec2 pos = (vec2(xy) + 0.5) * s - 0.5;
+    ivec2 i0 = ivec2(floor(pos));
+    vec2 f = pos - vec2(i0);
+
+    vec3 c00 = tap(i0);
+    vec3 c10 = tap(i0 + ivec2(1, 0));
+    vec3 c01 = tap(i0 + ivec2(0, 1));
+    vec3 c11 = tap(i0 + ivec2(1, 1));
+    vec3 lo = min(min(c00, c10), min(c01, c11));
+    vec3 hi = max(max(c00, c10), max(c01, c11));
+
+    // The edge runs along the direction of least change.
+    const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
+    float gx = (dot(c10, kLuma) + dot(c11, kLuma)) - (dot(c00, kLuma) + dot(c01, kLuma));
+    float gy = (dot(c01, kLuma) + dot(c11, kLuma)) - (dot(c00, kLuma) + dot(c10, kLuma));
+    vec2 dir = normalize(vec2(-gy, gx) + vec2(1e-5));
+    vec2 per = vec2(-dir.y, dir.x);
+
+    // Anisotropic weights over a 4x4 window: short across the edge, ~1.6x longer along it.
+    const float kAlong = 1.0 / (1.6 * 1.6);
+    const float kAcross = 1.0;
+    vec3 sum = vec3(0.0);
+    float wsum = 0.0;
+    for (int j = -1; j <= 2; ++j) {
+        for (int i = -1; i <= 2; ++i) {
+            vec2 d = vec2(i, j) - f;
+            float a = dot(d, dir);
+            float b = dot(d, per);
+            float w = exp(-(a * a * kAlong + b * b * kAcross) * 2.0);
+            sum += tap(i0 + ivec2(i, j)) * w;
+            wsum += w;
+        }
+    }
+    vec3 c = clamp(sum / max(wsum, 1e-5), lo, hi);
+    imageStore(dst, xy, vec4(c, 1.0));
+}

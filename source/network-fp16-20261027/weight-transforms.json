@@ -1,0 +1,454 @@
+[
+  {
+    "name": "swin_1_weights",
+    "input": "swin_1_weights",
+    "input_sha256": "5b6dd0015783d55216b69c609f11404004fa3273b9e5ce1d7e76e437ad68b6d7",
+    "output_sha256": "6d9e9c3ab473381568b14b7f7754b83c8de39135363d5dc784fe7347e88ccec1",
+    "regions": [
+      [
+        9344,
+        4096,
+        "transpose16"
+      ],
+      [
+        5248,
+        4096,
+        "transpose16"
+      ],
+      [
+        13440,
+        3072,
+        "transpose16"
+      ],
+      [
+        0,
+        1024,
+        "transpose16"
+      ]
+    ]
+  },
+  {
+    "name": "swin_2_weights",
+    "input": "swin_2_weights",
+    "input_sha256": "fe78e536a32154b752392afd0ccbcc94d124b758a8aa58169524aa3919e69f70",
+    "output_sha256": "f65c6517f2ac3a819dde69b6f17f02d6a10d941952fe359c37bf5101196af16c",
+    "regions": [
+      [
+        9344,
+        4096,
+        "transpose16"
+      ],
+      [
+        5248,
+        4096,
+        "transpose16"
+      ],
+      [
+        13440,
+        3072,
+        "transpose16"
+      ],
+      [
+        0,
+        1024,
+        "transpose16"
+      ]
+    ]
+  },
+  {
+    "name": "swin_3_weights",
+    "input": "swin_3_weights",
+    "input_sha256": "56825e7df550109e06485a4c7e05ad2d521862705604e54eaa1189588e7a2389",
+    "output_sha256": "6d4031fb05465c01d75b76648646bd19c94597c06616d208170bf9a752474289",
+    "regions": [
+      [
+        9344,
+        4096,
+        "transpose16"
+      ],
+      [
+        5248,
+        4096,
+        "transpose16"
+      ],
+      [
+        13440,
+        3072,
+        "transpose16"
+      ],
+      [
+        0,
+        1024,
+        "transpose16"
+      ]
+    ]
+  },
+  {
+    "name": "swin_4_weights",
+    "input": "swin_4_weights",
+    "input_sha256": "1388f9532f92bb7ffa06a0f2f8aa6ad3744652311967495438a5f6104716de4d",
+    "output_sha256": "fda354f1ed999d88948e18fb83e0fe44a674a3f17705a26d4f52fe6770c4402a",
+    "regions": [
+      [
+        9344,
+        4096,
+        "transpose16"
+      ],
+      [
+        5248,
+        4096,
+        "transpose16"
+      ],
+      [
+        13440,
+        3072,
+        "transpose16"
+      ],
+      [
+        0,
+        1024,
+        "transpose16"
+      ]
+    ]
+  },
+  {
+    "name": "swin_66_weights",
+    "input": "swin_66_weights",
+    "input_sha256": "78cd97d10d822f198a4d6a464281442242600fd3bc09932b3a25419129c9610f",
+    "output_sha256": "daef1601c6ba51e439a54edb89b853e4780a3d60b6ad532d3809341ac3af626c",
+    "regions": [
+      [
+        9344,
+        4096,
+        "transpose16"
+      ],
+      [
+        5248,
+        4096,
+        "transpose16"
+      ],
+      [
+        13440,
+        3072,
+        "transpose16"
+      ],
+      [
+        0,
+        1024,
+        "transpose16"
+      ]
+    ]
+  },
+  {
+    "name": "swin_67_weights",
+    "input": "swin_67_weights",
+    "input_sha256": "ae25be99b8d50cfbee6265d38ba917253ba93713412ad37663789aee7a6e36ae",
+    "output_sha256": "ca05454198fe26a5dc12845ee6b476d942a31d5a805999c2a00239b5a1c9b63b",
+    "regions": [
+      [
+        9344,
+        4096,
+        "transpose16"
+      ],
+      [
+        5248,
+        4096,
+        "transpose16"
+      ],
+      [
+        13440,
+        3072,
+        "transpose16"
+      ],
+      [
+        0,
+        1024,
+        "transpose16"
+      ]
+    ]
+  },
+  {
+    "name": "swin_68_weights",
+    "input": "swin_68_weights",
+    "input_sha256": "b2022b151747f289a08f6e457a08d9b1417819584975a191e252cf8beecc11a1",
+    "output_sha256": "2e21fee98f459f7097f9d1e38fb78012bb2310e571c0c721b55821b049c1323a",
+    "regions": [
+      [
+        9344,
+        4096,
+        "transpose16"
+      ],
+      [
+        5248,
+        4096,
+        "transpose16"
+      ],
+      [
+        13440,
+        3072,
+        "transpose16"
+      ],
+      [
+        0,
+        1024,
+        "transpose16"
+      ]
+    ]
+  },
+  {
+    "name": "swin_69_weights",
+    "input": "swin_69_weights",
+    "input_sha256": "f1e67c9388dae08040daa796ba11312786d6e133c40b5d2327fe8bc0fc58cf45",
+    "output_sha256": "7a67e7fe6b65857d86f8cf3fb39d9d1f65fe9b85c02f17255fa7c2561cd17a70",
+    "regions": [
+      [
+        9344,
+        4096,
+        "transpose16"
+      ],
+      [
+        5248,
+        4096,
+        "transpose16"
+      ],
+      [
+        13440,
+        3072,
+        "transpose16"
+      ],
+      [
+        0,
+        1024,
+        "transpose16"
+      ]
+    ]
+  },
+  {
+    "name": "ioport_0_ioport_pack",
+    "input": "ioport_0_ioport_pack",
+    "input_sha256": "85291b2ef2c87409e80e164515ad65c1ff65865cc159d71037ee787ee9502133",
+    "output_sha256": "ffe13e48d3cf4eb5241d3deb21f119cae888a1ab6af3212b7e1dda7adf816049",
+    "regions": [
+      [
+        0,
+        4096,
+        "transpose16"
+      ],
+      [
+        4096,
+        4096,
+        "transpose16"
+      ],
+      [
+        8832,
+        3072,
+        "transpose16"
+      ],
+      [
+        16128,
+        1024,
+        "transpose16"
+      ],
+      [
+        8192,
+        512,
+        "transpose16"
+      ]
+    ]
+  },
+  {
+    "name": "swin_15_weights_finaltile",
+    "input": "swin_15_weights",
+    "input_sha256": "df8100f65b1ee727b1a308ef873d24e0e29c14631d3b5b9d5a889ac68d0c334c",
+    "output_sha256": "a855c3e31971d4d1c798229893ff7a5feb820e7bf47b9f539687e61835a27c12",
+    "regions": [
+      [
+        0,
+        65536,
+        "tile256"
+      ]
+    ]
+  },
+  {
+    "name": "swin_16_weights_finaltile",
+    "input": "swin_16_weights",
+    "input_sha256": "8a3a74a090a929f209147e656b5a70ce2c2a1a8dde9b51e8e4e41dacfc1c1186",
+    "output_sha256": "a33880eeee05dfd16a40655c8efd39d7f7a8f4b0113e2daf38b26f5f9ae5a3d3",
+    "regions": [
+      [
+        0,
+        65536,
+        "tile256"
+      ]
+    ]
+  },
+  {
+    "name": "swin_17_weights_finaltile",
+    "input": "swin_17_weights",
+    "input_sha256": "4d187ec57de0ae11ff0294a0cfbadea632d80a80eb6f604e27a1293548563af3",
+    "output_sha256": "820069ece45b5b772996194d84a3addb6db2c65207934b0b645d86daabd8198e",
+    "regions": [
+      [
+        0,
+        65536,
+        "tile256"
+      ]
+    ]
+  },
+  {
+    "name": "swin_18_weights_finaltile",
+    "input": "swin_18_weights",
+    "input_sha256": "4d3fa06376081ed47f2a6ee1290ba6eb74619a2386c79e9c02af235f3cd10b31",
+    "output_sha256": "dec6c7f9ee54f12678c4114696f4fbd590c45289ee7038a6d5e8bb415f5eb56e",
+    "regions": [
+      [
+        0,
+        65536,
+        "tile256"
+      ]
+    ]
+  },
+  {
+    "name": "swin_19_weights_finaltile",
+    "input": "swin_19_weights",
+    "input_sha256": "39b293927236c2454c496279366f09b28b865a87b946488eb035b48aac046793",
+    "output_sha256": "a297e43ca3b87eb1133f1cd68ecf2cce43b37c000bfc66e7b96982bc3bbdd998",
+    "regions": [
+      [
+        0,
+        65536,
+        "tile256"
+      ]
+    ]
+  },
+  {
+    "name": "swin_20_weights_finaltile",
+    "input": "swin_20_weights",
+    "input_sha256": "0d30b9e14a9cc903a4b8128d53d88c43d5a18725199a1f655440898cd5e2f975",
+    "output_sha256": "c75e21f028e29cc8c7c9c135f6ddb4f96a5df224c26d14742d3fd7285d1240b1",
+    "regions": [
+      [
+        0,
+        65536,
+        "tile256"
+      ]
+    ]
+  },
+  {
+    "name": "swin_21_weights_finaltile",
+    "input": "swin_21_weights",
+    "input_sha256": "20068d15a208a73e243d43d9ac6f5208bcff38a8773c80ac6a3072d2abfacfb3",
+    "output_sha256": "dfd6c571a3d6f234e47995b5aaee57613a1644a3ceac6b93b4569402c1cccc05",
+    "regions": [
+      [
+        0,
+        65536,
+        "tile256"
+      ]
+    ]
+  },
+  {
+    "name": "swin_48_weights_finaltile",
+    "input": "swin_48_weights",
+    "input_sha256": "3505d216280d45a6bfc22d48bcd224be1b5a1faa6e0d0a3ac79554ba8cdc92e3",
+    "output_sha256": "a8378c778342bbfaec05e5beeec99e73eccc5454d4c9fbb67458f39b7ae360b7",
+    "regions": [
+      [
+        0,
+        65536,
+        "tile256"
+      ]
+    ]
+  },
+  {
+    "name": "swin_49_weights_finaltile",
+    "input": "swin_49_weights",
+    "input_sha256": "b8dc248008e5f4e6c6a1188c4586e4f51c59417746a26e5fffe55156d248a06b",
+    "output_sha256": "747b2698552e408cb0c03cc2a62e53044fab056004eb447dd58236e00e7bed5e",
+    "regions": [
+      [
+        0,
+        65536,
+        "tile256"
+      ]
+    ]
+  },
+  {
+    "name": "swin_50_weights_finaltile",
+    "input": "swin_50_weights",
+    "input_sha256": "93591a91167cde272590aa1a7dcfd4adca4e065df935ebd3f2bc9c60cf222a13",
+    "output_sha256": "95ec92551fae890ff5aec8a0f800de7950fe453699ba6e14a5beea0166912ece",
+    "regions": [
+      [
+        0,
+        65536,
+        "tile256"
+      ]
+    ]
+  },
+  {
+    "name": "swin_51_weights_finaltile",
+    "input": "swin_51_weights",
+    "input_sha256": "30c18a1f01becd53a29b7281783d3e34741f71b9fe453ad291c6b81d97c755fb",
+    "output_sha256": "06c5cd3de233b6d631666ad812c868001d8775a41fbf7b531c385deb7ff8c28a",
+    "regions": [
+      [
+        0,
+        65536,
+        "tile256"
+      ]
+    ]
+  },
+  {
+    "name": "swin_52_weights_finaltile",
+    "input": "swin_52_weights",
+    "input_sha256": "5f8d191b291f335ed5f14e0d2c284e814da60797ce74f92b67f58386c124a9d8",
+    "output_sha256": "0627866e67c677355714c82638162e2b2e924baeaf6ee93bfe58be17e4764cc1",
+    "regions": [
+      [
+        0,
+        65536,
+        "tile256"
+      ]
+    ]
+  },
+  {
+    "name": "swin_53_weights_finaltile",
+    "input": "swin_53_weights",
+    "input_sha256": "838ab20cf11ac97663fd2650a321e28daab18b7bfca0ea13d4ead9942993f538",
+    "output_sha256": "fe4583c410cc2ce735ea4bd90b27b599ba4829119332e712d6503b6cf0b6cdf5",
+    "regions": [
+      [
+        0,
+        65536,
+        "tile256"
+      ]
+    ]
+  },
+  {
+    "name": "swin_54_weights_finaltile",
+    "input": "swin_54_weights",
+    "input_sha256": "1cefe3bebcb7e32795d1fb8bd8ea6fc9a965e89882f3aec40da5815993831be1",
+    "output_sha256": "670ec2d77752d7887dc094316c3a7d8456c51616ea37873d6eb7072487a83006",
+    "regions": [
+      [
+        0,
+        65536,
+        "tile256"
+      ]
+    ]
+  },
+  {
+    "name": "swin_55_weights_finaltile",
+    "input": "swin_55_weights",
+    "input_sha256": "222ac4c6dcfa6ad61883143cc5fe1f6ee6483bcd7716947fd362993d817efda4",
+    "output_sha256": "64436b026a53af7f8c3b189bc2dfe6a8f3948f2e54f1f8d6d56f32f3ee1d5df3",
+    "regions": [
+      [
+        0,
+        65536,
+        "tile256"
+      ]
+    ]
+  }
+]

@@ -1,0 +1,284 @@
+// F3-C64 fused candidate (f3-c64-fused-half-patch-v1, netorg acceleration 2026-10-16).
+// Base: the bound pass-24 body c64_complete_d4_fp16.comp (sha256 f741301003bee914, byte-identical raw compile)
+// verbatim, plus the pass-25 downsample epilogue inlined at the end.
+// Body window geometry, token geometry, mA/mB channel ownership, global
+// stores and push words 0..20/27/30/31 are preserved; the DS fields use
+// words 21..26/28..29, which the bound body SPV never reads.
+// Weight contract: the bound pass-25 kernel ds-f34-k64.spv loads the 16x16
+// blocked form woff = whalf + ((n/16)*(K/16) + k/16)*256, stride 16, not the
+// baseline source's n*K + k with stride K (f34-k64/source/ds_complete_fp16.comp:44/47).
+// C64 complete D4: direct T/Y seed + M-pair + WO tileB; existing half image/debug tail.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 256) in;
+// diagnostics: NR_D4_SEED_ONLY / NR_D4_MMA_ONLY isolate the two O components
+#ifndef NR_D4_MODE
+#define NR_D4_MODE 0   // 0 = full, 1 = seed only, 2 = mma only
+#endif
+shared float16_t nrf_pair[4096u];
+shared float16_t nrf_mean[1024u];
+shared float16_t nrf_stage[1024u];
+#include "c64_ffn_opt_common.glsl"
+
+layout(set = 0, binding = 6) buffer YBuf { float16_t gY[]; };
+layout(set = 0, binding = 7) buffer TBuf { float16_t gT[]; };
+layout(set = 0, binding = 8) buffer DsWeightBuf { float16_t nrf_w[]; };
+layout(set = 0, binding = 9) buffer DsOutBuf { float16_t nrf_o[]; };
+
+#define MAT_H coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>
+
+void nr_body_stage() {
+    const uint t_local = gl_LocalInvocationID.x;
+    const uint sg = t_local / 32u;
+    const uint lane = t_local % 32u;
+    const uint wx = (pc.p1.z != 0) ? uint(pc.p2.x) : gl_WorkGroupID.x;
+    const uint wy = (pc.p1.z != 0) ? uint(pc.p2.y) : gl_WorkGroupID.y;
+    const uint w = wy * uint(pc.p1.x) + wx;
+    const bool debug = pc.p1.w != 0;
+    const uint wo = uint(pc.p4.x);
+    const uint ars = uint(pc.p4.z);   // p4.y is rs (used by D2) — ars is p4.z
+
+    if (debug) {
+        // Echo the same canonical producer values; these storage regions were live.
+        for (uint e=t_local;e<4096u;e+=256u) {
+            dbg[106496u+e]=gT[w*4096u+e];
+            dbg[40960u+e]=gY[w*4096u+e];
+        }
+        barrier();
+    }
+    const uint mA=(sg/2u)*8u,mB=mA+32u,n0=(sg%2u)*32u;
+    MAT_C accA0,accA1,accB0,accB1;
+    {
+        MAT_H scale0,scale1;
+        coopMatLoad(scale0,pack,ars+n0,0u,LROW);
+        coopMatLoad(scale1,pack,ars+n0+16u,0u,LROW);
+        {
+            MAT_H seed;
+            coopMatLoad(seed,gY,(w*64u+mA)*64u+n0+0u,64u,LROW);
+            seed=seed*scale0;
+#if NR_D4_MODE == 2
+            accA0=MAT_C(0.0);
+#else
+            accA0=MAT_C(seed);
+#endif
+        }
+        {
+            MAT_H seed;
+            coopMatLoad(seed,gY,(w*64u+mA)*64u+n0+16u,64u,LROW);
+            seed=seed*scale1;
+#if NR_D4_MODE == 2
+            accA1=MAT_C(0.0);
+#else
+            accA1=MAT_C(seed);
+#endif
+        }
+        {
+            MAT_H seed;
+            coopMatLoad(seed,gY,(w*64u+mB)*64u+n0+0u,64u,LROW);
+            seed=seed*scale0;
+#if NR_D4_MODE == 2
+            accB0=MAT_C(0.0);
+#else
+            accB0=MAT_C(seed);
+#endif
+        }
+        {
+            MAT_H seed;
+            coopMatLoad(seed,gY,(w*64u+mB)*64u+n0+16u,64u,LROW);
+            seed=seed*scale1;
+#if NR_D4_MODE == 2
+            accB1=MAT_C(0.0);
+#else
+            accB1=MAT_C(seed);
+#endif
+        }
+    }
+    for (uint ki=0u;ki<4u;++ki) {
+        const uint k0=ki*16u;
+        MAT_B b0,b1;
+        coopMatLoad(b0,pack,wo+(n0/16u)*1024u+ki*256u,16u,LCOL);
+        coopMatLoad(b1,pack,wo+((n0+16u)/16u)*1024u+ki*256u,16u,LCOL);
+        MAT_A a;
+        coopMatLoad(a,gT,(w*64u+mA)*64u+k0,64u,LROW);
+#if NR_D4_MODE != 1
+        accA0=coopMatMulAdd(a,b0,accA0);
+        accA1=coopMatMulAdd(a,b1,accA1);
+#endif
+        coopMatLoad(a,gT,(w*64u+mB)*64u+k0,64u,LROW);
+#if NR_D4_MODE != 1
+        accB0=coopMatMulAdd(a,b0,accB0);
+        accB1=coopMatMulAdd(a,b1,accB1);
+#endif
+    }
+    {
+        MAT_H narrowed=MAT_H(accA0);
+        if (debug) coopMatStore(narrowed,dbg,110592u+mA*64u+n0+0u,64u,LROW);
+        bool oob;
+        uint addr=c64_img_half_index(mA,n0+0u,wx,wy,oob);
+        if (!oob) coopMatStore(narrowed,imgout,addr,16u,LROW);
+        coopMatStore(narrowed, nrf_pair, (sg * 4u + 0u) * 128u, 16u, LROW);
+    }
+    {
+        MAT_H narrowed=MAT_H(accA1);
+        if (debug) coopMatStore(narrowed,dbg,110592u+mA*64u+n0+16u,64u,LROW);
+        bool oob;
+        uint addr=c64_img_half_index(mA,n0+16u,wx,wy,oob);
+        if (!oob) coopMatStore(narrowed,imgout,addr,16u,LROW);
+        coopMatStore(narrowed, nrf_pair, (sg * 4u + 1u) * 128u, 16u, LROW);
+    }
+    {
+        MAT_H narrowed=MAT_H(accB0);
+        if (debug) coopMatStore(narrowed,dbg,110592u+mB*64u+n0+0u,64u,LROW);
+        bool oob;
+        uint addr=c64_img_half_index(mB,n0+0u,wx,wy,oob);
+        if (!oob) coopMatStore(narrowed,imgout,addr,16u,LROW);
+        coopMatStore(narrowed, nrf_pair, (sg * 4u + 2u) * 128u, 16u, LROW);
+    }
+    {
+        MAT_H narrowed=MAT_H(accB1);
+        if (debug) coopMatStore(narrowed,dbg,110592u+mB*64u+n0+16u,64u,LROW);
+        bool oob;
+        uint addr=c64_img_half_index(mB,n0+16u,wx,wy,oob);
+        if (!oob) coopMatStore(narrowed,imgout,addr,16u,LROW);
+        coopMatStore(narrowed, nrf_pair, (sg * 4u + 3u) * 128u, 16u, LROW);
+    }
+    // ---- F3-C64 fused epilogue: the 2x2 mean of this workgroup's 8x8 patch ---
+    // subgroup (sx1 = sg>>2, h = (sg>>1)&1, n0 = (sg&1)*32) owns 32 channels of
+    // the two tile rows: the A fragments carry tile row sy1 = 0 (tokens mA..mA+7,
+    // q = 0/1) and the B fragments tile row sy1 = 1 (tokens mB..mB+7, q = 2/3).
+    // The pooled pixel (px, py) of tile (tx, ty) reads the fragment rows
+    // 2dx + {0,1,4,5}, which is the tile's own 2x2 source block.
+    subgroupBarrier();
+    {
+        const uint ch  = lane & 15u;
+        const uint acc = lane >> 4u;              // fragment channels n0/n0+16
+        const uint sx1 = sg >> 2u;
+        const uint h   = (sg >> 1u) & 1u;         // pooled row inside the tile
+        const uint kk  = (sg & 1u) * 32u + acc * 16u + ch;
+        for (uint sy1 = 0u; sy1 < 2u; ++sy1) {
+            const uint base = (sg * 4u + sy1 * 2u + acc) * 128u;
+            // the tile this fragment pair writes, exactly as the bound body
+            // clamps it:  tx = 2*wx + shift_x + (q&1),  ty = 2*wy + shift_y + (q>>1)
+            const int tx = 2 * int(wx) + pc.p0.z + int(sx1);
+            const int ty = 2 * int(wy) + pc.p0.w + int(sy1);
+            const bool tile_ok = (tx >= 0) && (ty >= 0) &&
+                                 (tx < pc.p0.x) && (ty < pc.p0.y);
+            for (uint dx = 0u; dx < 2u; ++dx) {
+                const uint r0 = 2u * dx;
+                const uint px = 4u * wx - 2u + 2u * sx1 + dx;
+                const int  py = 4 * int(wy) - 2 + 2 * int(sy1) + int(h);
+                const uint ly = 2u * sy1 + h;
+                const uint lx = 2u * sx1 + dx;
+                precise float16_t v = float16_t(0);
+                if (tile_ok && px < uint(pc.p7.x) && py >= 0 &&
+                    uint(py) < uint(pc.p7.y) && uint(py) < uint(pc.p5.z)) {
+                    precise float16_t a  = nrf_pair[base + r0 * 16u + ch];
+                    precise float16_t b  = nrf_pair[base + (r0 + 1u) * 16u + ch];
+                    precise float16_t cc = nrf_pair[base + (r0 + 4u) * 16u + ch];
+                    precise float16_t dd = nrf_pair[base + (r0 + 5u) * 16u + ch];
+                    precise float16_t top = a + b;
+                    precise float16_t bottom = cc + dd;
+                    precise float16_t sum = top + bottom;
+                    v = sum * float16_t(0.25);
+                }
+                nrf_mean[(4u * ly + lx) * uint(pc.p6.x) + kk] = v;
+            }
+        }
+    }
+    subgroupBarrier();
+}
+
+// ---------------------------------------------------------------------------
+// F3-C64 fusion scratch.
+//   nrf_pair  : the four body output fragments of each subgroup (4 x 128 halfs,
+//               the fragments' own row-major 8x16 image), reused per subgroup by
+//               the mean staging and then by the projection staging.
+//   nrf_mean  : the pooled tile, [16 slots][K] with stride K.
+//   nrf_stage : the projection fragment staging (one 8x16 fragment per subgroup).
+// The address helper is a verbatim copy of ioport_common.glsl io_at().
+// ---------------------------------------------------------------------------
+
+uint nrf_ds_at(uint px,uint py,uint c,uint W,uint H,uint C,uint layout_id) {
+    if(layout_id==2u)return (py*W+px)*C+c;
+    if(layout_id==3u) {
+        uint sub=(c&1u)|((c>>3u&1u)<<1u)|((c>>1u&1u)<<2u)|((c>>2u&1u)<<3u);
+        return (c/16u)*(W*H*16u)+(py*W+px)*16u+sub;
+    }
+    uint t=layout_id==1u?py*W+px:((py/4u)*(W/4u)+px/4u)*16u+4u*(py%4u)+px%4u;
+    return ((t/16u)*(C/16u)+c/16u)*256u+(t%16u)*16u+c%16u;
+}
+
+// the parent DS's own output write pattern: stage the fragment in workgroup
+// memory, then write one 16-channel group per lane group (lane%16 = channel
+// inside the group, lane/16 = pooled pixel).  This kernel's fragment is a
+// workgroup's own 4x2 pooled block, not the parent's eight raster tokens, so the
+// address is computed per element and the elements outside the view are skipped
+// (the parent's DS writes exactly the 168x96x128 view and nothing else).
+void nrf_write_group(uint group, int px0i, int py0i, uint OW, uint OH, uint N,
+                     uint obase, uint sg, uint lane) {
+    for (uint i = lane; i < 128u; i += 32u) {
+        uint m = i >> 4u, c = i & 15u;
+        int px = px0i + int(m & 3u);
+        int py = py0i + int(m >> 2u);
+        if (px < 0 || py < 0 || uint(px) >= OW || uint(py) >= OH) continue;
+        nrf_o[obase + nrf_ds_at(uint(px), uint(py), group * 16u + c, OW, OH, N, 0u)] =
+            nrf_stage[sg * 128u + i];
+    }
+}
+
+void main() {
+    nr_body_stage();
+    barrier();
+    const uint tid  = gl_LocalInvocationID.x;
+    const uint sg   = tid / 32u;
+    const uint lane = tid % 32u;
+    const uint wx = (pc.p1.z != 0u) ? uint(pc.p2.x) : gl_WorkGroupID.x;
+    const uint wy = (pc.p1.z != 0u) ? uint(pc.p2.y) : gl_WorkGroupID.y;
+    // fused DS fields: words 21..26 and 28..29, which the bound body SPV never
+    // reads (it references only p0, p1.x/z/w, p2.x/y, p4.x, p4.z).
+    const uint OW = uint(pc.p5.y), OH = uint(pc.p5.z), N = uint(pc.p5.w), K = uint(pc.p6.x);
+    const uint whalf = uint(pc.p6.y), obase = uint(pc.p6.z);
+    const uint valid_W = uint(pc.p7.x), valid_H = uint(pc.p7.y);
+    const uint sy = sg & 1u;                 // pooled row half
+    const uint cb = sg >> 1u;                // 32-output-channel group (4 groups)
+    const uint rowbase = 8u * sy;            // this half's first slot row
+    const int  px0 = 4 * int(wx) - 2;
+    const int  py0 = 4 * int(wy) - 2 + 2 * int(sy);
+    {
+        const uint nb0 = cb * 2u;                 // two output-channel blocks of 16
+        coopmat<float,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator> acc0 =
+            coopmat<float,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>(0.0);
+        coopmat<float,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator> acc1 =
+            coopmat<float,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>(0.0);
+        for (uint k = 0u; k < K; k += 16u) {
+            coopmat<float16_t,gl_ScopeSubgroup,8,16,gl_MatrixUseA> aa;
+            coopMatLoad(aa, nrf_mean, rowbase * K + k, K, gl_CooperativeMatrixLayoutRowMajor);
+            coopmat<float16_t,gl_ScopeSubgroup,16,16,gl_MatrixUseB> bb;
+            coopMatLoad(bb, nrf_w, whalf + ((nb0 + 0u) * (K / 16u) + k / 16u) * 256u, 16u,
+                        gl_CooperativeMatrixLayoutColumnMajor);
+            acc0 = coopMatMulAdd(aa, bb, acc0);
+            coopMatLoad(bb, nrf_w, whalf + ((nb0 + 1u) * (K / 16u) + k / 16u) * 256u, 16u,
+                        gl_CooperativeMatrixLayoutColumnMajor);
+            acc1 = coopMatMulAdd(aa, bb, acc1);
+        }
+        {
+            MAT_H h = MAT_H(acc0);
+            coopMatStore(h, nrf_stage, sg * 128u, 16u, gl_CooperativeMatrixLayoutRowMajor);
+        }
+        subgroupBarrier();
+        nrf_write_group(nb0 + 0u, px0, py0, OW, OH, N, obase, sg, lane);
+        subgroupBarrier();
+        {
+            MAT_H h = MAT_H(acc1);
+            coopMatStore(h, nrf_stage, sg * 128u, 16u, gl_CooperativeMatrixLayoutRowMajor);
+        }
+        subgroupBarrier();
+        nrf_write_group(nb0 + 1u, px0, py0, OW, OH, N, obase, sg, lane);
+        subgroupBarrier();
+    }
+}

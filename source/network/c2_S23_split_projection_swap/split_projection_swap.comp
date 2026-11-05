@@ -1,0 +1,130 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+layout(local_size_x=128) in;
+#include "split16_common.glsl"
+// e4m3 rounding of the projection store (SplitProj, KIND=1 path).
+// `layers/split_swin.py` SplitProj.forward ends with `return q8(self.project(x, skip))`,
+// and this kernel writes that projection straight to the block output. The narrowing
+// `MH h = MH(cXY)` is exactly the f16 step, so the rounding goes right after it.
+// NR_QUANT_E4M3=0 restores f16-only.
+#ifndef NR_QUANT_E4M3
+#define NR_QUANT_E4M3 1
+#endif
+#include "e4m3.glsl"
+#define MH coopmat<float16_t,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>
+#if KIND!=1 && KIND!=4
+#error Active swapped projection supports KIND1/KIND4 only
+#endif
+#if KIND==4
+shared float16_t half_tail[512];
+#endif
+// Actual transposed GEMM: C^T[N,T] = W[N,K] * GT^T[K,T].
+// No lane/component mapping is assumed. Every load/store is standard ROW/COL.
+void main() {
+    uint sg=gl_LocalInvocationID.x/32u,lane=gl_LocalInvocationID.x%32u;
+    const uint t0=gl_WorkGroupID.x*32u,n0=gl_WorkGroupID.y*64u+sg*16u;
+    const uint wb=uint(pc.p3.z),rs=uint(pc.p3.w);
+    const uint wbase=wb+(n0/16u)*8192u;
+    const uint xbase0=tiled(t0,0u,512u),xbase1=tiled(t0+16u,0u,512u);
+    MC c00,c01,c10,c11;
+    MH scale0,scale1;
+    // COL stride0 repeats the same eight channel gains across sixteen tokens.
+    coopMatLoad(scale0,weights,rs+n0,0u,COL);
+    coopMatLoad(scale1,weights,rs+n0+8u,0u,COL);
+    {MH h;coopMatLoad(h,gy,tiled(t0,n0,512u),16u,COL);h=h*scale0;c00=MC(h);}
+    {MH h;coopMatLoad(h,gy,tiled(t0+16u,n0,512u),16u,COL);h=h*scale0;c01=MC(h);}
+    {MH h;coopMatLoad(h,gy,tiled(t0,n0+8u,512u),16u,COL);h=h*scale1;c10=MC(h);}
+    {MH h;coopMatLoad(h,gy,tiled(t0+16u,n0+8u,512u),16u,COL);h=h*scale1;c11=MC(h);}
+    for(uint k=0u;k<512u;k+=16u) {
+        // Shipping SWAP_AB=1's token-outer/channel-inner MMA order is retained.
+        // Each token B supplies two channel A fragments, and the two loaded
+        // weight A fragments are reused for both token fragments.
+        MA a0,a1;MB b;
+        coopMatLoad(a0,weights,wbase+(k/16u)*256u,16u,ROW);
+        coopMatLoad(a1,weights,wbase+(k/16u)*256u+128u,16u,ROW);
+        coopMatLoad(b,gt,xbase0+(k/16u)*256u,16u,COL);
+        c00=coopMatMulAdd(a0,b,c00);c10=coopMatMulAdd(a1,b,c10);
+        coopMatLoad(b,gt,xbase1+(k/16u)*256u,16u,COL);
+        c01=coopMatMulAdd(a0,b,c01);c11=coopMatMulAdd(a1,b,c11);
+    }
+    {
+        MH h=MH(c00);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<h.length();++ci) h[ci]=nr_e4m3_h(h[ci]);
+#endif
+#if KIND==1
+        // Rows are channels, columns tokens: standard COL restores go[T,N].
+        coopMatStore(h,go,tiled(t0+0u,n0+0u,512u),16u,COL);
+#else
+        // Real half scratch has [16 tokens][8 channels]. COL stride8 is16B.
+        coopMatStore(h,half_tail,sg*128u,8u,COL);
+        subgroupMemoryBarrierShared();subgroupBarrier();
+        for(uint e=lane;e<128u;e+=32u) {
+            uint t=t0+0u+e/8u,n=n0+0u+e%8u;
+            go[view(t,n)]=half_tail[sg*128u+e];
+        }
+        subgroupMemoryBarrierShared();subgroupBarrier();
+#endif
+    }
+    {
+        MH h=MH(c01);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<h.length();++ci) h[ci]=nr_e4m3_h(h[ci]);
+#endif
+#if KIND==1
+        // Rows are channels, columns tokens: standard COL restores go[T,N].
+        coopMatStore(h,go,tiled(t0+16u,n0+0u,512u),16u,COL);
+#else
+        // Real half scratch has [16 tokens][8 channels]. COL stride8 is16B.
+        coopMatStore(h,half_tail,sg*128u,8u,COL);
+        subgroupMemoryBarrierShared();subgroupBarrier();
+        for(uint e=lane;e<128u;e+=32u) {
+            uint t=t0+16u+e/8u,n=n0+0u+e%8u;
+            go[view(t,n)]=half_tail[sg*128u+e];
+        }
+        subgroupMemoryBarrierShared();subgroupBarrier();
+#endif
+    }
+    {
+        MH h=MH(c10);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<h.length();++ci) h[ci]=nr_e4m3_h(h[ci]);
+#endif
+#if KIND==1
+        // Rows are channels, columns tokens: standard COL restores go[T,N].
+        coopMatStore(h,go,tiled(t0+0u,n0+8u,512u),16u,COL);
+#else
+        // Real half scratch has [16 tokens][8 channels]. COL stride8 is16B.
+        coopMatStore(h,half_tail,sg*128u,8u,COL);
+        subgroupMemoryBarrierShared();subgroupBarrier();
+        for(uint e=lane;e<128u;e+=32u) {
+            uint t=t0+0u+e/8u,n=n0+8u+e%8u;
+            go[view(t,n)]=half_tail[sg*128u+e];
+        }
+        subgroupMemoryBarrierShared();subgroupBarrier();
+#endif
+    }
+    {
+        MH h=MH(c11);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<h.length();++ci) h[ci]=nr_e4m3_h(h[ci]);
+#endif
+#if KIND==1
+        // Rows are channels, columns tokens: standard COL restores go[T,N].
+        coopMatStore(h,go,tiled(t0+16u,n0+8u,512u),16u,COL);
+#else
+        // Real half scratch has [16 tokens][8 channels]. COL stride8 is16B.
+        coopMatStore(h,half_tail,sg*128u,8u,COL);
+        subgroupMemoryBarrierShared();subgroupBarrier();
+        for(uint e=lane;e<128u;e+=32u) {
+            uint t=t0+16u+e/8u,n=n0+8u+e%8u;
+            go[view(t,n)]=half_tail[sg*128u+e];
+        }
+        subgroupMemoryBarrierShared();subgroupBarrier();
+#endif
+    }
+}

@@ -1,0 +1,99 @@
+// C128 D4 directA+WOtileB+cooperative seed/output: original seed-before-K math and two-accumulator ownership.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 256) in;
+// diagnostics: NR_D4_SEED_ONLY / NR_D4_MMA_ONLY isolate the two O components
+#ifndef NR_D4_MODE
+#define NR_D4_MODE 0   // 0 = full, 1 = seed only, 2 = mma only
+#endif
+#include "c64_c128_common.glsl"
+
+layout(set = 0, binding = 6) buffer YBuf { float16_t gY[]; };
+layout(set = 0, binding = 7) buffer TBuf { float16_t gT[]; };
+
+#define MAT_H coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>
+
+void main() {
+    const uint t_local = gl_LocalInvocationID.x;
+    const uint sg = t_local / 32u;
+    const uint lane = t_local % 32u;
+    const uint wx = (pc.p1.z != 0) ? uint(pc.p2.x) : gl_WorkGroupID.x;
+    const uint wy = (pc.p1.z != 0) ? uint(pc.p2.y) : gl_WorkGroupID.y;
+    const uint w = wy * uint(pc.p1.x) + wx;
+    const bool debug = pc.p1.w != 0;
+    const uint wo = uint(pc.p4.x);
+    const uint ars = uint(pc.p4.z);   // p4.y is rs (used by D2) — ars is p4.z
+
+    if (debug) {
+        for (uint e = t_local; e < 8192u; e += 256u) {
+            dbg[212992u + e] = gT[w * 8192u + e];
+            dbg[81920u + e] = gY[w * 8192u + e];
+        }
+        barrier();
+    }
+
+    for (uint j = 0u; j < 4u; ++j) {
+        uint m0 = (sg / 4u + 2u * j) * 8u;
+        uint n0 = (sg % 4u) * 32u;
+        MAT_C acc0;
+        {
+            MAT_H seed;
+            coopMatLoad(seed, gY, (w * 64u + m0) * 128u + n0, 128u, LROW);
+            MAT_H scale;
+            coopMatLoad(scale, pack, ars + n0, 0u, LROW);
+            seed = seed * scale;
+#if NR_D4_MODE == 2
+            acc0 = MAT_C(0.0);
+#else
+            acc0 = MAT_C(seed);
+#endif
+        }
+        MAT_C acc1;
+        {
+            MAT_H seed;
+            coopMatLoad(seed, gY, (w * 64u + m0) * 128u + (n0 + 16u), 128u, LROW);
+            MAT_H scale;
+            coopMatLoad(scale, pack, ars + (n0 + 16u), 0u, LROW);
+            seed = seed * scale;
+#if NR_D4_MODE == 2
+            acc1 = MAT_C(0.0);
+#else
+            acc1 = MAT_C(seed);
+#endif
+        }
+        for (uint ki = 0u; ki < 8u; ++ki) {
+            uint k0 = ki * 16u;
+            MAT_A a;  coopMatLoad(a, gT, (w * 64u + m0) * 128u + k0, 128u, LROW);
+            MAT_B b0; coopMatLoad(b0, pack, wo + (n0 / 16u) * 2048u + (k0 / 16u) * 256u, 16u, LCOL);
+            MAT_B b1; coopMatLoad(b1, pack, wo + ((n0 + 16u) / 16u) * 2048u + (k0 / 16u) * 256u,
+                                  16u, LCOL);
+#if NR_D4_MODE != 1
+            acc0 = coopMatMulAdd(a, b0, acc0);
+            acc1 = coopMatMulAdd(a, b1, acc1);
+#endif
+        }
+        {
+            MAT_H narrowed = MAT_H(acc0);
+            if (debug)
+                coopMatStore(narrowed, dbg, 221184u + m0 * 128u + n0, 128u, LROW);
+            bool oob;
+            uint addr = c128_img_half_index(m0, n0, wx, wy, oob);
+            if (!oob)
+                coopMatStore(narrowed, imgout, addr, 16u, LROW);
+        }
+        {
+            MAT_H narrowed = MAT_H(acc1);
+            if (debug)
+                coopMatStore(narrowed, dbg, 221184u + m0 * 128u + (n0 + 16u), 128u, LROW);
+            bool oob;
+            uint addr = c128_img_half_index(m0, (n0 + 16u), wx, wy, oob);
+            if (!oob)
+                coopMatStore(narrowed, imgout, addr, 16u, LROW);
+        }
+    }
+}

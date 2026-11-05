@@ -1,0 +1,132 @@
+// C64 complete D4: direct T/Y seed + M-pair + WO tileB; existing half image/debug tail.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 256) in;
+// diagnostics: NR_D4_SEED_ONLY / NR_D4_MMA_ONLY isolate the two O components
+#ifndef NR_D4_MODE
+#define NR_D4_MODE 0   // 0 = full, 1 = seed only, 2 = mma only
+#endif
+#include "c64_ffn_opt_common.glsl"
+
+layout(set = 0, binding = 6) buffer YBuf { float16_t gY[]; };
+layout(set = 0, binding = 7) buffer TBuf { float16_t gT[]; };
+
+#define MAT_H coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>
+
+void main() {
+    const uint t_local = gl_LocalInvocationID.x;
+    const uint sg = t_local / 32u;
+    const uint lane = t_local % 32u;
+    const uint wx = (pc.p1.z != 0) ? uint(pc.p2.x) : gl_WorkGroupID.x;
+    const uint wy = (pc.p1.z != 0) ? uint(pc.p2.y) : gl_WorkGroupID.y;
+    const uint w = wy * uint(pc.p1.x) + wx;
+    const bool debug = pc.p1.w != 0;
+    const uint wo = uint(pc.p4.x);
+    const uint ars = uint(pc.p4.z);   // p4.y is rs (used by D2) — ars is p4.z
+
+    if (debug) {
+        // Echo the same canonical producer values; these storage regions were live.
+        for (uint e=t_local;e<4096u;e+=256u) {
+            dbg[106496u+e]=gT[w*4096u+e];
+            dbg[40960u+e]=gY[w*4096u+e];
+        }
+        barrier();
+    }
+    const uint mA=(sg/2u)*8u,mB=mA+32u,n0=(sg%2u)*32u;
+    MAT_C accA0,accA1,accB0,accB1;
+    {
+        MAT_H scale0,scale1;
+        coopMatLoad(scale0,pack,ars+n0,0u,LROW);
+        coopMatLoad(scale1,pack,ars+n0+16u,0u,LROW);
+        {
+            MAT_H seed;
+            coopMatLoad(seed,gY,(w*64u+mA)*64u+n0+0u,64u,LROW);
+            seed=seed*scale0;
+#if NR_D4_MODE == 2
+            accA0=MAT_C(0.0);
+#else
+            accA0=MAT_C(seed);
+#endif
+        }
+        {
+            MAT_H seed;
+            coopMatLoad(seed,gY,(w*64u+mA)*64u+n0+16u,64u,LROW);
+            seed=seed*scale1;
+#if NR_D4_MODE == 2
+            accA1=MAT_C(0.0);
+#else
+            accA1=MAT_C(seed);
+#endif
+        }
+        {
+            MAT_H seed;
+            coopMatLoad(seed,gY,(w*64u+mB)*64u+n0+0u,64u,LROW);
+            seed=seed*scale0;
+#if NR_D4_MODE == 2
+            accB0=MAT_C(0.0);
+#else
+            accB0=MAT_C(seed);
+#endif
+        }
+        {
+            MAT_H seed;
+            coopMatLoad(seed,gY,(w*64u+mB)*64u+n0+16u,64u,LROW);
+            seed=seed*scale1;
+#if NR_D4_MODE == 2
+            accB1=MAT_C(0.0);
+#else
+            accB1=MAT_C(seed);
+#endif
+        }
+    }
+    for (uint ki=0u;ki<4u;++ki) {
+        const uint k0=ki*16u;
+        MAT_B b0,b1;
+        coopMatLoad(b0,pack,wo+(n0/16u)*1024u+ki*256u,16u,LCOL);
+        coopMatLoad(b1,pack,wo+((n0+16u)/16u)*1024u+ki*256u,16u,LCOL);
+        MAT_A a;
+        coopMatLoad(a,gT,(w*64u+mA)*64u+k0,64u,LROW);
+#if NR_D4_MODE != 1
+        accA0=coopMatMulAdd(a,b0,accA0);
+        accA1=coopMatMulAdd(a,b1,accA1);
+#endif
+        coopMatLoad(a,gT,(w*64u+mB)*64u+k0,64u,LROW);
+#if NR_D4_MODE != 1
+        accB0=coopMatMulAdd(a,b0,accB0);
+        accB1=coopMatMulAdd(a,b1,accB1);
+#endif
+    }
+    {
+        MAT_H narrowed=MAT_H(accA0);
+        if (debug) coopMatStore(narrowed,dbg,110592u+mA*64u+n0+0u,64u,LROW);
+        bool oob;
+        uint addr=c64_img_half_index(mA,n0+0u,wx,wy,oob);
+        if (!oob) coopMatStore(narrowed,imgout,addr,16u,LROW);
+    }
+    {
+        MAT_H narrowed=MAT_H(accA1);
+        if (debug) coopMatStore(narrowed,dbg,110592u+mA*64u+n0+16u,64u,LROW);
+        bool oob;
+        uint addr=c64_img_half_index(mA,n0+16u,wx,wy,oob);
+        if (!oob) coopMatStore(narrowed,imgout,addr,16u,LROW);
+    }
+    {
+        MAT_H narrowed=MAT_H(accB0);
+        if (debug) coopMatStore(narrowed,dbg,110592u+mB*64u+n0+0u,64u,LROW);
+        bool oob;
+        uint addr=c64_img_half_index(mB,n0+0u,wx,wy,oob);
+        if (!oob) coopMatStore(narrowed,imgout,addr,16u,LROW);
+    }
+    {
+        MAT_H narrowed=MAT_H(accB1);
+        if (debug) coopMatStore(narrowed,dbg,110592u+mB*64u+n0+16u,64u,LROW);
+        bool oob;
+        uint addr=c64_img_half_index(mB,n0+16u,wx,wy,oob);
+        if (!oob) coopMatStore(narrowed,imgout,addr,16u,LROW);
+    }
+}

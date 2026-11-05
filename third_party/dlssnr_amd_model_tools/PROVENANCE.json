@@ -1,0 +1,25 @@
+{
+  "upstream": "https://github.com/mochizuki0323/DLSSNR-AMD",
+  "model_profile_commit": "939b6072b792d0f45f8487a0b38a21d31264b6bc",
+  "licence": "MIT; see LICENSE",
+  "local_changes": [
+    "inspect_nr.py accepts --resource",
+    "unpack_postblock.py derives block name from its input file",
+    "VK102 full-model profile uses the upstream descriptor/tensor maps; DLL admission is separately pinned to 310.8.0.0 SHA256"
+  ],
+  "source_sha256": {
+    "inspect_nr.py": "90aa75622c7c7fe4dc92355546dc5b8c3729414f445454e0c4ffd7266c759545",
+    "unpack_swin_family.py": "9abbb55eb65a84179b00ef3a753bba1258dfc454ba43d928422fd0dcd12147ba",
+    "unpack_splitswin.py": "3e271bc6590170b5a305f73d1f6434f3fc81bc6723681c5ce43814dd70920a0e",
+    "unpack_vit.py": "dec8b2783d20015cab2ecdb792195398d367db5f438ea6227d5c7280d5e63d7c",
+    "unpack_preblock.py": "b376ba9f27e8ded9e16e37009585ee42705b342bcedcc1d56307396543ab3ab5",
+    "unpack_postblock.py": "79f2368e8ad9c4a8145c9ea78a095a1cd621c3b2ace976afd9410ae8c1c8f98e",
+    "pack_model.py": "ae6ee6822419f16a6d9f39bbd9624ed34177d24046f1fccf9d3a29148928cdd3",
+    "descriptor-small.json": "417da96c40b4ba72d61b779acebb4be90d9f7924f946b5667085c256558760ba",
+    "model-files-small.txt": "c6dc209d23bdc1612fd6812f42599e6b7ef9433138b877608e0230eaeba9bd6d",
+    "model-files-small.sha256": "a7e514607272aba78d34e0f5dcf15f3155779ec8e1b33363269e37ae5abbda39",
+    "descriptor-vk102.json": "fa8dd12b1ba4047f1b6bea1184a71a8c94b8a9bf3f836bcf97da7e23d953d8ff",
+    "model-files-vk102.txt": "c07dcb2cab91a7270847f60dede38d01e6deb3757afbf2dab3ad203f06757e49",
+    "model-files-vk102.sha256": "e0bedcd56d7aac5639c71749abb521b08de1a84e86d0ac532d1eae3de5870d56"
+  }
+}

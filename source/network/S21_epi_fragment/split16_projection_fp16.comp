@@ -1,0 +1,120 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+layout(local_size_x=256) in;
+#include "split16_common.glsl"
+// S21 fragment epilogue: the FP32 accumulator is narrowed once to this
+// half accumulator fragment after the whole K loop (same shape S20 uses).
+#define MH coopmat<float16_t,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>
+// KIND 0 ffwd residual, 1 attention projection, 2 projection+pool,
+// 3 finalhead, 4 projection+outview. KIND0 shared is 20,480 B after the
+// epilogue fragment change (sx 16,384 + seed scratch 4,096).
+#ifndef KIND
+#define KIND 0
+#endif
+shared float16_t sx[8192];
+#if KIND==2
+shared float16_t so[2048];   // KIND2 pool only; KIND0 never reads it
+#endif
+shared float scratch[1024];  // seed staging (kept: it is the accumulate seed)
+uint token_at(uint s) {
+#if KIND==1 || KIND==2 || KIND==4
+    return spatial_token(gl_WorkGroupID.x,s);
+#else
+    return gl_WorkGroupID.x*16u+s;
+#endif
+}
+void main() {
+    uint lid=gl_LocalInvocationID.x,sg=lid/32u,lane=lid%32u,ng=gl_WorkGroupID.y;
+    for(uint e=lid;e<8192u;e+=256u) {
+        uint t=token_at(e/512u),c=e%512u;
+#if KIND==0
+        sx[e]=gf[tiled(t,c,512u)];
+#elif KIND==3
+        sx[e]=gp[tiled(t,c,512u)];
+#else
+        sx[e]=gt[tiled(t,c,512u)];
+#endif
+    }
+    barrier();
+    uint m0=sg/4u*8u,n0=(sg%4u)*32u,base=ng*128u+n0;
+#if KIND==0
+    uint wb=uint(pc.p2.w),rs=uint(pc.p3.x);
+#elif KIND==3
+    uint wb=uint(pc.p4.z),rs=0u;
+#else
+    uint wb=uint(pc.p3.z),rs=uint(pc.p3.w);
+#endif
+    MC acc0=MC(0.0),acc1=MC(0.0);
+#if KIND!=3
+    for(uint side=0u;side<2u;side++) {
+        for(uint e=lane;e<128u;e+=32u) {
+            uint t=token_at(m0+e/16u),c=base+side*16u+e%16u;
+#if KIND==0
+            precise float16_t seed=input_value(t,c)*weights[rs+c];
+#else
+            precise float16_t seed=gy[tiled(t,c,512u)]*weights[rs+c];
+#endif
+            scratch[sg*128u+e]=float(seed);
+        }
+        subgroupMemoryBarrierShared();subgroupBarrier();
+        if(side==0u) coopMatLoad(acc0,scratch,sg*128u,16u,ROW);
+        else coopMatLoad(acc1,scratch,sg*128u,16u,ROW);
+        subgroupMemoryBarrierShared();subgroupBarrier();
+    }
+#endif
+    for(uint k=0u;k<512u;k+=16u) {
+        MA a;MB b0,b1;
+        coopMatLoad(a,sx,m0*512u+k,512u,ROW);
+        coopMatLoad(b0,weights,wb+base*512u+k,512u,COL);
+        coopMatLoad(b1,weights,wb+(base+16u)*512u+k,512u,COL);
+        acc0=coopMatMulAdd(a,b0,acc0);acc1=coopMatMulAdd(a,b1,acc1);
+    }
+#if KIND==0
+    // NR_EPI_FRAGMENT (B580): narrow each FP32 accumulator to MH once, after the
+    // whole K loop, and store the fragment straight to gy.  m0 is 0 or 8 and the
+    // 8 rows stay inside one 16-token supertile, so the destination is 16-half
+    // contiguous per row.  No epilogue F32 scratch round trip, no barrier, and no
+    // so publication (KIND0 never reads it).
+    for(uint side=0u;side<2u;side++) {
+        MH h;
+        if(side==0u) h=MH(acc0); else h=MH(acc1);
+        coopMatStore(h,gy,tiled(token_at(m0),base+16u*side,512u),16u,ROW);
+    }
+#else
+    for(uint side=0u;side<2u;side++) {
+        if(side==0u) coopMatStore(acc0,scratch,sg*128u,16u,ROW);
+        else coopMatStore(acc1,scratch,sg*128u,16u,ROW);
+        subgroupMemoryBarrierShared();subgroupBarrier();
+        for(uint e=lane;e<128u;e+=32u) {
+            uint s=m0+e/16u,t=token_at(s),n=n0+side*16u+e%16u,c=ng*128u+n;
+            float16_t v=float16_t(scratch[sg*128u+e]);
+#if KIND==3
+            gh[t*1024u+c]=v; // finalhead -> ViT canonical raster token-major
+#elif KIND==4
+            go[view(t,c)]=v;
+#else
+            go[tiled(t,c,512u)]=v;
+#endif
+            so[s*128u+n]=v;
+        }
+        subgroupMemoryBarrierShared();subgroupBarrier();
+    }
+#endif
+#if KIND==2
+    barrier();
+    for(uint e=lid;e<512u;e+=256u) {
+        uint p=e/128u,c=e%128u,s=(p/2u)*8u+(p%2u)*2u;
+        precise float16_t a=so[s*128u+c]+so[(s+1u)*128u+c];
+        precise float16_t b=so[(s+4u)*128u+c]+so[(s+5u)*128u+c];
+        precise float16_t sum=a+b;
+        float16_t mean=sum*float16_t(0.25);
+        uint tx=gl_WorkGroupID.x%uint(pc.p0.x/4),ty=gl_WorkGroupID.x/uint(pc.p0.x/4);
+        uint tok=(ty*2u+p/2u)*uint(pc.p7.x)+tx*2u+p%2u;
+        gp[tiled(tok,ng*128u+c,512u)]=mean;
+    }
+#endif
+}

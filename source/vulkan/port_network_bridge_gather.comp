@@ -1,0 +1,109 @@
+#version 450
+layout(local_size_x=256) in;
+layout(set=0,binding=0) uniform sampler2D color_image;
+layout(set=0,binding=1) uniform sampler2D motion_image;
+layout(set=0,binding=2) uniform sampler2D depth_image;
+layout(set=0,binding=3,std430) buffer PreBundle { float pre[]; };
+layout(set=0,binding=4,std430) buffer PostBundle { float post[]; };
+// The frame as the model sees it, kept at the model's own resolution. The scatter needs it to
+// turn the network's answer into an *edit* (answer - input) instead of a replacement: at a
+// working scale below 1 the answer has no high frequency of its own, and publishing it whole
+// is what erased the fine texture. The ioport planes cannot serve here - they are in-place
+// scratch by the end of the pass list - so the resampled frame is published separately.
+layout(set=0,binding=5,std430) buffer BaseBundle { float base_plane[]; };
+layout(push_constant) uniform Push {
+    uvec4 color_motion_base;
+    uvec4 depth_size; // depth base xy, grid stride zw = 1280x720.
+    uvec4 pre_offsets;  // source,motion,depth(float elements),have_depth.
+    uvec4 post_offsets;
+    uvec4 src_size;     // render source window (w,h). zw = the guides' own extent; (0,0) = same as xy.
+    uvec4 active_size;  // NR grid rect (w,h) actually processed; grid = full contract.
+} pc;
+
+// HDR framing. An SDR frame arrives display-referred and must go in untouched, but a
+// scene-linear HDR frame carries values the network never saw: its first convolution is
+// trained on a display-referred picture, so 50.0 in a texel is not "bright", it is broken.
+// Khronos PBR Neutral's highlight half maps [0,inf) -> [0,1) and has an exact inverse, so
+// the scatter can put the network's edit back into the frame's own domain. Gain is the
+// frame's exposure; the scatter divides it back out. gain==0 means "SDR, do nothing",
+// which is why the branch costs the existing path nothing.
+vec3 neutral(vec3 c) {
+    const float start = 0.76, d = 0.24, desat = 0.15;
+    const float peak = max(c.r, max(c.g, c.b));
+    if (peak < start) return c;
+    const float np = 1.0 - d * d / (peak + d - start);
+    c *= np / peak;
+    const float g = 1.0 - 1.0 / (desat * (peak - np) + 1.0);
+    return mix(c, vec3(np), g);
+}
+vec3 srgb_enc(vec3 v) {
+    v = clamp(v, 0.0, 1.0);
+    return mix(v * 12.92, 1.055 * pow(max(v, vec3(1e-8)), vec3(1.0 / 2.4)) - 0.055, step(0.0031308, v));
+}
+
+void main() {
+    // The whole frozen canvas is written every frame: the active rect carries
+    // the frame, everything outside it is edge replication of that rect. The
+    // padding is not cosmetic - coarse pyramid passes read across the active
+    // boundary, and stale or zero canvas there bleeds into the result and
+    // flickers as the temporal history changes. The network still dispatches
+    // only the active rect, so this costs one gather over the full canvas.
+    uint i=gl_GlobalInvocationID.x;
+    uvec2 grid=pc.depth_size.zw;
+    if(i>=grid.x*grid.y)return;
+    uvec2 xy=uvec2(i%grid.x,i/grid.x);
+    uvec2 a=max(pc.active_size.xy,uvec2(1u));
+    uvec2 o=pc.active_size.zw;
+    uvec2 q=min(max(xy,o),o+a-1u);
+    // Bilinear resample of the render-size source window onto the active rect.
+    // The rect is aspect-preserving and centred, so a 16:10 source is scaled
+    // uniformly instead of being squashed into a 16:9 canvas. active==source and
+    // rect==grid lands on exact texel centres: the upstream identity mapping.
+    vec2 g=vec2(a);
+    uvec2 s=max(pc.src_size.xy,uvec2(1u));
+    // Depth and motion may arrive smaller than the source window: the frame NR sees after an
+    // upscaler is the big one, the guides the game rendered are the small one. src_size.zw carries
+    // their own extent (0,0 means "same as the source", which is the only case that existed
+    // before). Coordinates are mapped through g2m, so a guide at 1280x720 under a 1920x1080 frame
+    // samples its whole extent instead of the top-left corner.
+    uvec2 mvd=(pc.src_size.z!=0u&&pc.src_size.w!=0u)?pc.src_size.zw:s;
+    vec2 g2m=vec2(mvd)/vec2(s);
+    vec2 lp=vec2(q-o);
+    vec2 pos=(lp+0.5f)*vec2(s)/g-0.5f;
+    ivec2 i0=clamp(ivec2(floor(pos)),ivec2(0),ivec2(s-1u));
+    ivec2 i1=clamp(i0+1,ivec2(0),ivec2(s-1u));
+    ivec2 j0=clamp(ivec2(vec2(i0)*g2m),ivec2(0),ivec2(mvd)-1);
+    ivec2 j1=clamp(ivec2(vec2(i1)*g2m),ivec2(0),ivec2(mvd)-1);
+    vec2 f=fract(pos);
+    vec4 c00=texelFetch(color_image,ivec2(pc.color_motion_base.xy)+i0,0);
+    vec4 c10=texelFetch(color_image,ivec2(pc.color_motion_base.xy)+ivec2(i1.x,i0.y),0);
+    vec4 c01=texelFetch(color_image,ivec2(pc.color_motion_base.xy)+ivec2(i0.x,i1.y),0);
+    vec4 c11=texelFetch(color_image,ivec2(pc.color_motion_base.xy)+i1,0);
+    vec4 c=mix(mix(c00,c10,f.x),mix(c01,c11,f.x),f.y);
+    vec2 m00=texelFetch(motion_image,ivec2(pc.color_motion_base.zw)+j0,0).xy;
+    vec2 m10=texelFetch(motion_image,ivec2(pc.color_motion_base.zw)+ivec2(j1.x,j0.y),0).xy;
+    vec2 m01=texelFetch(motion_image,ivec2(pc.color_motion_base.zw)+ivec2(j0.x,j1.y),0).xy;
+    vec2 m11=texelFetch(motion_image,ivec2(pc.color_motion_base.zw)+j1,0).xy;
+    vec2 m=mix(mix(m00,m10,f.x),mix(m01,m11,f.x),f.y);
+    // Motion values are source-pixel displacements; rescale to the pixels of the
+    // rect they were placed into, so the frozen /1280,/720 factors keep meaning.
+    // mvd, not s: a guide smaller than the frame counts its own pixels.
+    m*=g/vec2(mvd);
+    uvec2 su=min(uvec2((lp+0.5f)*vec2(s)/g),s-1u);
+    uvec2 sd=min(uvec2(vec2(su)*g2m),mvd-1u);
+    float d=pc.pre_offsets.w!=0u?texelFetch(depth_image,ivec2(pc.depth_size.xy)+ivec2(sd),0).r:0.0;
+    const float hdr_gain=uintBitsToFloat(pc.post_offsets.w);
+    vec4 outc=vec4(c.rgb,c.a);
+    if(hdr_gain>0.0) outc.rgb=srgb_enc(neutral(max(c.rgb,vec3(0.0))*hdr_gain));
+    for(uint k=0;k<4;++k) {pre[pc.pre_offsets.x+i*4+k]=outc[k];post[pc.post_offsets.x+i*4+k]=outc[k];base_plane[i*4+k]=outc[k];}
+    // The guide planes are frame-sized (their offsets are built from frame_w*frame_h) while this
+    // dispatch walks the padded canvas, so the canvas rows below the active rect used to spill
+    // 76,800 motion floats straight onto the top 80 rows of the depth plane. A live capture showed
+    // exactly that: depth rows 0..79 were 99% zero with motion-range maxima. Keep each guide plane
+    // inside its own extent; the padding rows are never read back at frame extent.
+    if(i<pc.src_size.x*pc.src_size.y) {
+        pre[pc.pre_offsets.y+i*2]=m.x;pre[pc.pre_offsets.y+i*2+1]=m.y;
+        post[pc.post_offsets.y+i*2]=m.x;post[pc.post_offsets.y+i*2+1]=m.y;
+        pre[pc.pre_offsets.z+i]=d;post[pc.post_offsets.z+i]=d;
+    }
+}

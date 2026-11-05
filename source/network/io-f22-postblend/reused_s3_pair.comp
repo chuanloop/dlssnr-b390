@@ -1,0 +1,52 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "ioport_common.glsl"
+layout(local_size_x=32) in;
+layout(set=0,binding=2,std430) readonly buffer InputPairs { f16vec2 x2[]; };
+layout(set=0,binding=3,std430) buffer OutputPairs { f16vec2 o2[]; };
+f16vec2 read_pair(uint px,uint py,uint c) {
+    return x2[(pc.p4.x+io_at(px,py,c,pc.p0.x,pc.p0.y,pc.p1.x,pc.p2.x))/2u];
+}
+void write_pair(uint px,uint py,uint c,f16vec2 value) {
+    o2[(pc.p4.y+io_at(px,py,c,pc.p0.z,pc.p0.w,pc.p1.y,pc.p2.y))/2u]=value;
+}
+layout(set=0,binding=0,std430) readonly buffer WeightPairs { f16vec2 w2[]; };
+layout(set=0,binding=6,std430) readonly buffer SkipPairs { f16vec2 sk2[]; };
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    uint CW=pc.p0.z/2u,CH=pc.p0.w/2u,NC=pc.p1.y/2u;
+    if(i>=CW*CH*NC)return;
+    uint c=(i%NC)*2u,t=i/NC,x=t%CW,y=t/CW;
+    // Existing B3-19 coarse ownership;pair transport and crop/layout1 are this package's additions.
+    precise f16vec2 main_scaled=read_pair(x,y,c);
+    if(pc.p7.x==1u)main_scaled=main_scaled*w2[(pc.p1.w+pc.p1.y+c)/2u];
+    f16vec2 skip_gain=w2[(pc.p1.w+c)/2u];
+    {
+        uint px=2u*x+0u,py=2u*y+0u;
+        f16vec2 skip_input=sk2[(pc.p4.z+io_at(px,py,c,pc.p2.w,pc.p3.x,pc.p1.y,pc.p2.z))/2u];
+        precise f16vec2 skip_v=skip_input*skip_gain;
+        precise f16vec2 value=main_scaled+skip_v;
+        write_pair(px,py,c,value);
+    }
+    {
+        uint px=2u*x+1u,py=2u*y+0u;
+        f16vec2 skip_input=sk2[(pc.p4.z+io_at(px,py,c,pc.p2.w,pc.p3.x,pc.p1.y,pc.p2.z))/2u];
+        precise f16vec2 skip_v=skip_input*skip_gain;
+        precise f16vec2 value=main_scaled+skip_v;
+        write_pair(px,py,c,value);
+    }
+    {
+        uint px=2u*x+0u,py=2u*y+1u;
+        f16vec2 skip_input=sk2[(pc.p4.z+io_at(px,py,c,pc.p2.w,pc.p3.x,pc.p1.y,pc.p2.z))/2u];
+        precise f16vec2 skip_v=skip_input*skip_gain;
+        precise f16vec2 value=main_scaled+skip_v;
+        write_pair(px,py,c,value);
+    }
+    {
+        uint px=2u*x+1u,py=2u*y+1u;
+        f16vec2 skip_input=sk2[(pc.p4.z+io_at(px,py,c,pc.p2.w,pc.p3.x,pc.p1.y,pc.p2.z))/2u];
+        precise f16vec2 skip_v=skip_input*skip_gain;
+        precise f16vec2 value=main_scaled+skip_v;
+        write_pair(px,py,c,value);
+    }
+}

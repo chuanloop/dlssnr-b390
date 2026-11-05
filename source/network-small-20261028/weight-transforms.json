@@ -1,0 +1,147 @@
+[
+  {
+    "name": "ioport_0_ioport_pack",
+    "input": "ioport_0_ioport_pack",
+    "input_sha256": "5af39d861d30ed16d229bd7d89af627ad58048c2f68e45b2e3ad99a21a3e6cdf",
+    "output_sha256": "ab81f87092aaa0301d241703504659400c2fcd5dac728252d84126fdfb540c2b",
+    "regions": [
+      [
+        0,
+        4096,
+        "transpose16"
+      ],
+      [
+        4096,
+        4096,
+        "transpose16"
+      ],
+      [
+        8832,
+        3072,
+        "transpose16"
+      ],
+      [
+        16128,
+        1024,
+        "transpose16"
+      ],
+      [
+        8192,
+        512,
+        "transpose16"
+      ]
+    ]
+  },
+  {
+    "name": "swin_1_weights",
+    "input": "swin_1_weights",
+    "input_sha256": "b49e888a32bde359505941b93f61adba93ac00646cec96aa751f6f8d38636814",
+    "output_sha256": "2bd73e8c9c03db8a70e2d75d8f0e4be8d5b279f848b90aeaf0e54007321cc9e6",
+    "regions": [
+      [
+        9344,
+        4096,
+        "transpose16"
+      ],
+      [
+        5248,
+        4096,
+        "transpose16"
+      ],
+      [
+        13440,
+        3072,
+        "transpose16"
+      ],
+      [
+        0,
+        1024,
+        "transpose16"
+      ]
+    ]
+  },
+  {
+    "name": "swin_2_weights",
+    "input": "swin_2_weights",
+    "input_sha256": "fe082d5b5416046a96a6b14caf0f5f79d4c3632f07091e9b523d13e577ddd72f",
+    "output_sha256": "36d5b850cbb1f4c67c33c6f33c5585b00c36017474e2bfd780146e734a5cb669",
+    "regions": [
+      [
+        9344,
+        4096,
+        "transpose16"
+      ],
+      [
+        5248,
+        4096,
+        "transpose16"
+      ],
+      [
+        13440,
+        3072,
+        "transpose16"
+      ],
+      [
+        0,
+        1024,
+        "transpose16"
+      ]
+    ]
+  },
+  {
+    "name": "swin_28_weights",
+    "input": "swin_28_weights",
+    "input_sha256": "c249865383726199b3c84cb0a34ea212f48ecdc0bd40bf181390eb5b33a12173",
+    "output_sha256": "340f1dab76ce55f0b89e4826ed91981518d491a2a643469c8b4af67a52df24bb",
+    "regions": [
+      [
+        9344,
+        4096,
+        "transpose16"
+      ],
+      [
+        5248,
+        4096,
+        "transpose16"
+      ],
+      [
+        13440,
+        3072,
+        "transpose16"
+      ],
+      [
+        0,
+        1024,
+        "transpose16"
+      ]
+    ]
+  },
+  {
+    "name": "swin_29_weights",
+    "input": "swin_29_weights",
+    "input_sha256": "7dad28cbd65f76d2fae28fddde53677705a2861ba556f804886f5e990ac33524",
+    "output_sha256": "ea5eb42b99a15f85a28c378017220accd46afada4506443e9060d18b3ac7e7ad",
+    "regions": [
+      [
+        9344,
+        4096,
+        "transpose16"
+      ],
+      [
+        5248,
+        4096,
+        "transpose16"
+      ],
+      [
+        13440,
+        3072,
+        "transpose16"
+      ],
+      [
+        0,
+        1024,
+        "transpose16"
+      ]
+    ]
+  }
+]

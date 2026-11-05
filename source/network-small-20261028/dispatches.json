@@ -1,0 +1,542 @@
+[
+  {
+    "ordinal": 0,
+    "name": "r00_f1c32_image_pre",
+    "shader": "small-c12c0f9d6e04.spv"
+  },
+  {
+    "ordinal": 1,
+    "name": "r01_block1_swin_body_1",
+    "shader": "small-4c034a532ce6.spv"
+  },
+  {
+    "ordinal": 2,
+    "name": "r02_block2_swin_body_1",
+    "shader": "small-4c034a532ce6.spv"
+  },
+  {
+    "ordinal": 3,
+    "name": "r02_ioport_block2_0",
+    "shader": "small-06844a2eaca3.spv"
+  },
+  {
+    "ordinal": 4,
+    "name": "r03_block3_swin_body_1",
+    "shader": "small-8aa2595a969b.spv"
+  },
+  {
+    "ordinal": 5,
+    "name": "r03_block3_swin_body_3",
+    "shader": "small-77c63dc928ba.spv"
+  },
+  {
+    "ordinal": 6,
+    "name": "r03_block3_swin_body_4",
+    "shader": "small-ca587aa46abe.spv"
+  },
+  {
+    "ordinal": 7,
+    "name": "r04_block4_swin_body_1",
+    "shader": "small-8aa2595a969b.spv"
+  },
+  {
+    "ordinal": 8,
+    "name": "r04_block4_swin_body_3",
+    "shader": "small-77c63dc928ba.spv"
+  },
+  {
+    "ordinal": 9,
+    "name": "r04_f3c64_body_ds",
+    "shader": "small-cfcb325ee6cc.spv"
+  },
+  {
+    "ordinal": 10,
+    "name": "r05_block5_swin_body_1",
+    "shader": "small-958c9719869c.spv"
+  },
+  {
+    "ordinal": 11,
+    "name": "r05_block5_swin_body_3",
+    "shader": "small-3c26fc5338aa.spv"
+  },
+  {
+    "ordinal": 12,
+    "name": "r05_block5_swin_body_4",
+    "shader": "small-7c839f246426.spv"
+  },
+  {
+    "ordinal": 13,
+    "name": "r06_block6_swin_body_1",
+    "shader": "small-958c9719869c.spv"
+  },
+  {
+    "ordinal": 14,
+    "name": "r06_block6_swin_body_3",
+    "shader": "small-3c26fc5338aa.spv"
+  },
+  {
+    "ordinal": 15,
+    "name": "r06_f3c128_body_ds",
+    "shader": "small-af2304e5c6e5.spv"
+  },
+  {
+    "ordinal": 16,
+    "name": "r07_block7_swin_body_1",
+    "shader": "small-dc5f1634de7e.spv"
+  },
+  {
+    "ordinal": 17,
+    "name": "r07_block7_swin_body_3",
+    "shader": "small-236aad961967.spv"
+  },
+  {
+    "ordinal": 18,
+    "name": "r07_block7_swin_body_4",
+    "shader": "small-8f592cf9576f.spv"
+  },
+  {
+    "ordinal": 19,
+    "name": "r08_block8_swin_body_1",
+    "shader": "small-dc5f1634de7e.spv"
+  },
+  {
+    "ordinal": 20,
+    "name": "r08_block8_swin_body_3",
+    "shader": "small-236aad961967.spv"
+  },
+  {
+    "ordinal": 21,
+    "name": "r08_f3c256_body_ds",
+    "shader": "small-72a833210f14.spv"
+  },
+  {
+    "ordinal": 22,
+    "name": "r09_split16_b9_l0",
+    "shader": "small-32291c7ea61b.spv"
+  },
+  {
+    "ordinal": 23,
+    "name": "r10_split16_b9_l1",
+    "shader": "small-a5aeb6a56f86.spv"
+  },
+  {
+    "ordinal": 24,
+    "name": "r11_split16_b9_l2",
+    "shader": "small-228dee8a437d.spv"
+  },
+  {
+    "ordinal": 25,
+    "name": "r12_split16_b9_l3",
+    "shader": "small-cc70e2d68b85.spv"
+  },
+  {
+    "ordinal": 26,
+    "name": "r13_split16_b10_l0",
+    "shader": "small-32291c7ea61b.spv"
+  },
+  {
+    "ordinal": 27,
+    "name": "r14_split16_b10_l1",
+    "shader": "small-a5aeb6a56f86.spv"
+  },
+  {
+    "ordinal": 28,
+    "name": "r15_split16_b10_l2",
+    "shader": "small-228dee8a437d.spv"
+  },
+  {
+    "ordinal": 29,
+    "name": "r16_split16_b10_l3",
+    "shader": "small-d9f2ac3eb45e.spv"
+  },
+  {
+    "ordinal": 30,
+    "name": "r17_split16_b10_l4",
+    "shader": "small-7407f93cd518.spv"
+  },
+  {
+    "ordinal": 31,
+    "name": "r18_vit_block11_ffn_expand",
+    "shader": "small-e8747d59afef.spv"
+  },
+  {
+    "ordinal": 32,
+    "name": "r19_vit_block11_ffn_contract",
+    "shader": "small-bc629c9b8e24.spv"
+  },
+  {
+    "ordinal": 33,
+    "name": "r20_vit_block11_qkv",
+    "shader": "small-72e2df7c7b1e.spv"
+  },
+  {
+    "ordinal": 34,
+    "name": "r21_vit_block11_attention",
+    "shader": "small-c9971af497d2.spv"
+  },
+  {
+    "ordinal": 35,
+    "name": "r22_vit_block11_projection",
+    "shader": "small-55e04be51248.spv"
+  },
+  {
+    "ordinal": 36,
+    "name": "r23_vit_block12_ffn_expand",
+    "shader": "small-e8747d59afef.spv"
+  },
+  {
+    "ordinal": 37,
+    "name": "r24_vit_block12_ffn_contract",
+    "shader": "small-bc629c9b8e24.spv"
+  },
+  {
+    "ordinal": 38,
+    "name": "r25_vit_block12_qkv",
+    "shader": "small-72e2df7c7b1e.spv"
+  },
+  {
+    "ordinal": 39,
+    "name": "r26_vit_block12_attention",
+    "shader": "small-c9971af497d2.spv"
+  },
+  {
+    "ordinal": 40,
+    "name": "r27_vit_block12_projection",
+    "shader": "small-55e04be51248.spv"
+  },
+  {
+    "ordinal": 41,
+    "name": "r28_vit_block13_ffn_expand",
+    "shader": "small-e8747d59afef.spv"
+  },
+  {
+    "ordinal": 42,
+    "name": "r29_vit_block13_ffn_contract",
+    "shader": "small-bc629c9b8e24.spv"
+  },
+  {
+    "ordinal": 43,
+    "name": "r30_vit_block13_qkv",
+    "shader": "small-72e2df7c7b1e.spv"
+  },
+  {
+    "ordinal": 44,
+    "name": "r31_vit_block13_attention",
+    "shader": "small-c9971af497d2.spv"
+  },
+  {
+    "ordinal": 45,
+    "name": "r32_vit_block13_projection",
+    "shader": "small-55e04be51248.spv"
+  },
+  {
+    "ordinal": 46,
+    "name": "r33_vit_block14_ffn_expand",
+    "shader": "small-e8747d59afef.spv"
+  },
+  {
+    "ordinal": 47,
+    "name": "r34_vit_block14_ffn_contract",
+    "shader": "small-bc629c9b8e24.spv"
+  },
+  {
+    "ordinal": 48,
+    "name": "r35_vit_block14_qkv",
+    "shader": "small-72e2df7c7b1e.spv"
+  },
+  {
+    "ordinal": 49,
+    "name": "r36_vit_block14_attention",
+    "shader": "small-c9971af497d2.spv"
+  },
+  {
+    "ordinal": 50,
+    "name": "r37_vit_block14_projection",
+    "shader": "small-55e04be51248.spv"
+  },
+  {
+    "ordinal": 51,
+    "name": "r38_vit_block15_ffn_expand",
+    "shader": "small-e8747d59afef.spv"
+  },
+  {
+    "ordinal": 52,
+    "name": "r39_vit_block15_ffn_contract",
+    "shader": "small-bc629c9b8e24.spv"
+  },
+  {
+    "ordinal": 53,
+    "name": "r40_vit_block15_qkv",
+    "shader": "small-72e2df7c7b1e.spv"
+  },
+  {
+    "ordinal": 54,
+    "name": "r41_vit_block15_attention",
+    "shader": "small-c9971af497d2.spv"
+  },
+  {
+    "ordinal": 55,
+    "name": "r42_vit_block15_projection",
+    "shader": "small-55e04be51248.spv"
+  },
+  {
+    "ordinal": 56,
+    "name": "r43_vit_block16_ffn_expand",
+    "shader": "small-e8747d59afef.spv"
+  },
+  {
+    "ordinal": 57,
+    "name": "r44_vit_block16_ffn_contract",
+    "shader": "small-bc629c9b8e24.spv"
+  },
+  {
+    "ordinal": 58,
+    "name": "r45_vit_block16_qkv",
+    "shader": "small-72e2df7c7b1e.spv"
+  },
+  {
+    "ordinal": 59,
+    "name": "r46_vit_block16_attention",
+    "shader": "small-c9971af497d2.spv"
+  },
+  {
+    "ordinal": 60,
+    "name": "r47_vit_block16_projection",
+    "shader": "small-55e04be51248.spv"
+  },
+  {
+    "ordinal": 61,
+    "name": "r48_vit_block17_ffn_expand",
+    "shader": "small-e8747d59afef.spv"
+  },
+  {
+    "ordinal": 62,
+    "name": "r49_vit_block17_ffn_contract",
+    "shader": "small-bc629c9b8e24.spv"
+  },
+  {
+    "ordinal": 63,
+    "name": "r50_vit_block17_qkv",
+    "shader": "small-72e2df7c7b1e.spv"
+  },
+  {
+    "ordinal": 64,
+    "name": "r51_vit_block17_attention",
+    "shader": "small-c9971af497d2.spv"
+  },
+  {
+    "ordinal": 65,
+    "name": "r52_vit_block17_projection",
+    "shader": "small-55e04be51248.spv"
+  },
+  {
+    "ordinal": 66,
+    "name": "r53_vit_block18_ffn_expand",
+    "shader": "small-e8747d59afef.spv"
+  },
+  {
+    "ordinal": 67,
+    "name": "r54_vit_block18_ffn_contract",
+    "shader": "small-bc629c9b8e24.spv"
+  },
+  {
+    "ordinal": 68,
+    "name": "r55_vit_block18_qkv",
+    "shader": "small-72e2df7c7b1e.spv"
+  },
+  {
+    "ordinal": 69,
+    "name": "r56_vit_block18_attention",
+    "shader": "small-c9971af497d2.spv"
+  },
+  {
+    "ordinal": 70,
+    "name": "r57_vit_block18_projection",
+    "shader": "small-55e04be51248.spv"
+  },
+  {
+    "ordinal": 71,
+    "name": "r58_t3_b39_project_blend",
+    "shader": "small-8f3be14045d6.spv"
+  },
+  {
+    "ordinal": 72,
+    "name": "r59_split16_b20_l0",
+    "shader": "small-32291c7ea61b.spv"
+  },
+  {
+    "ordinal": 73,
+    "name": "r60_split16_b20_l1",
+    "shader": "small-a5aeb6a56f86.spv"
+  },
+  {
+    "ordinal": 74,
+    "name": "r61_split16_b20_l2",
+    "shader": "small-228dee8a437d.spv"
+  },
+  {
+    "ordinal": 75,
+    "name": "r62_split16_b20_l3",
+    "shader": "small-cc70e2d68b85.spv"
+  },
+  {
+    "ordinal": 76,
+    "name": "r63_split16_b21_l0",
+    "shader": "small-32291c7ea61b.spv"
+  },
+  {
+    "ordinal": 77,
+    "name": "r64_split16_b21_l1",
+    "shader": "small-a5aeb6a56f86.spv"
+  },
+  {
+    "ordinal": 78,
+    "name": "r65_split16_b21_l2",
+    "shader": "small-228dee8a437d.spv"
+  },
+  {
+    "ordinal": 79,
+    "name": "r66_split16_b21_l3",
+    "shader": "small-cc70e2d68b85.spv"
+  },
+  {
+    "ordinal": 80,
+    "name": "r67_c3x_pre_c256",
+    "shader": "small-bbd7334a0d49.spv"
+  },
+  {
+    "ordinal": 81,
+    "name": "r67_c3x_body_c256",
+    "shader": "small-572009f4c09f.spv"
+  },
+  {
+    "ordinal": 82,
+    "name": "r67_block22_swin_body_2",
+    "shader": "small-47b20f2fe57d.spv"
+  },
+  {
+    "ordinal": 83,
+    "name": "r67_block22_swin_body_3",
+    "shader": "small-236aad961967.spv"
+  },
+  {
+    "ordinal": 84,
+    "name": "r67_block22_swin_body_4",
+    "shader": "small-8f592cf9576f.spv"
+  },
+  {
+    "ordinal": 85,
+    "name": "r68_block23_swin_body_1",
+    "shader": "small-dc5f1634de7e.spv"
+  },
+  {
+    "ordinal": 86,
+    "name": "r68_block23_swin_body_3",
+    "shader": "small-236aad961967.spv"
+  },
+  {
+    "ordinal": 87,
+    "name": "r68_block23_swin_body_4",
+    "shader": "small-8f592cf9576f.spv"
+  },
+  {
+    "ordinal": 88,
+    "name": "r69_c3x_pre_c128",
+    "shader": "small-eb82244a26dc.spv"
+  },
+  {
+    "ordinal": 89,
+    "name": "r69_c3x_body_c128",
+    "shader": "small-12569d767adf.spv"
+  },
+  {
+    "ordinal": 90,
+    "name": "r69_block24_swin_body_2",
+    "shader": "small-ffde3c3d2379.spv"
+  },
+  {
+    "ordinal": 91,
+    "name": "r69_block24_swin_body_3",
+    "shader": "small-3c26fc5338aa.spv"
+  },
+  {
+    "ordinal": 92,
+    "name": "r69_block24_swin_body_4",
+    "shader": "small-7c839f246426.spv"
+  },
+  {
+    "ordinal": 93,
+    "name": "r70_block25_swin_body_1",
+    "shader": "small-958c9719869c.spv"
+  },
+  {
+    "ordinal": 94,
+    "name": "r70_block25_swin_body_3",
+    "shader": "small-3c26fc5338aa.spv"
+  },
+  {
+    "ordinal": 95,
+    "name": "r70_block25_swin_body_4",
+    "shader": "small-7c839f246426.spv"
+  },
+  {
+    "ordinal": 96,
+    "name": "r71_c3x_pre_c64",
+    "shader": "small-46ccf24f4bea.spv"
+  },
+  {
+    "ordinal": 97,
+    "name": "r71_c3x_body_c64",
+    "shader": "small-542231a6d6f7.spv"
+  },
+  {
+    "ordinal": 98,
+    "name": "r71_block26_swin_body_2",
+    "shader": "small-af74ba2043c4.spv"
+  },
+  {
+    "ordinal": 99,
+    "name": "r71_block26_swin_body_3",
+    "shader": "small-77c63dc928ba.spv"
+  },
+  {
+    "ordinal": 100,
+    "name": "r71_block26_swin_body_4",
+    "shader": "small-ca587aa46abe.spv"
+  },
+  {
+    "ordinal": 101,
+    "name": "r72_block27_swin_body_1",
+    "shader": "small-8aa2595a969b.spv"
+  },
+  {
+    "ordinal": 102,
+    "name": "r72_block27_swin_body_3",
+    "shader": "small-77c63dc928ba.spv"
+  },
+  {
+    "ordinal": 103,
+    "name": "r72_block27_swin_body_4",
+    "shader": "small-ca587aa46abe.spv"
+  },
+  {
+    "ordinal": 104,
+    "name": "r73_f2c32_block28_fused",
+    "shader": "small-ed2ddc36df14.spv"
+  },
+  {
+    "ordinal": 105,
+    "name": "r74_block29_swin_body_1",
+    "shader": "small-4c034a532ce6.spv"
+  },
+  {
+    "ordinal": 106,
+    "name": "r75_s37_fold_body_r1a_v1",
+    "shader": "small-215aca679aaa.spv"
+  },
+  {
+    "ordinal": 107,
+    "name": "r75_ioport_block30_2",
+    "shader": "small-b49ee2a8ef02.spv"
+  }
+]

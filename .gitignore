@@ -1,0 +1,33 @@
+local/
+assets/
+models/
+weights/
+build/
+*.bin
+*.spv
+*.dll
+*.asi
+*.exe
+*.cubin
+__pycache__/
+*.pyc
+*.log
+
+.venv/
+.env
+*.zip
+*.7z
+*.npz
+*.npy
+*.safetensors
+*.pt
+# Separate legacy Python runtime, not used by this Vulkan build
+source/bridge/game/
+source/bridge/tests/*.py
+# Stale duplicate; the matched shader is source/bridge/nr_hdr_proxy.hlsl
+source/bridge/shaders/nr_hdr_proxy.hlsl
+
+# NVIDIA 官方 DLSS-NR 运行库（约 263MB，版权文件，严禁上传 GitHub）
+# 各包和游戏目录都要带它，但只能本地复制，不进仓库
+nvngx_dlssnr.dll
+nvngx*.dll

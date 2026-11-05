@@ -1,0 +1,3014 @@
+{
+  "profile": "small",
+  "shaders": {
+    "small-c12c0f9d6e04.spv": {
+      "source": "source/network-fp16-20261027/f01-c12c0f9d6e04/kernel.comp",
+      "defines": [],
+      "raw_sha256": "833304ae23c18dc37275d541a4a9f3037c867d954bfe8b9ce74c8883e946b720",
+      "sha256": "833304ae23c18dc37275d541a4a9f3037c867d954bfe8b9ce74c8883e946b720",
+      "precision_decorations": []
+    },
+    "small-4c034a532ce6.spv": {
+      "source": "source/network-fp16-20261027/f02-4c034a532ce6/kernel.comp",
+      "defines": [],
+      "raw_sha256": "dbcf33fe5e19648de70cf88eb89ec8dc099b1f2d5725cfa684f6910d60f14696",
+      "sha256": "dbcf33fe5e19648de70cf88eb89ec8dc099b1f2d5725cfa684f6910d60f14696",
+      "precision_decorations": []
+    },
+    "small-06844a2eaca3.spv": {
+      "source": "source/network-fp16-20261027/f03-06844a2eaca3/kernel.comp",
+      "defines": [],
+      "raw_sha256": "e36f45cdb90fe87f784842806b9116a6733033af8b8a6932b29882b83220deca",
+      "sha256": "e36f45cdb90fe87f784842806b9116a6733033af8b8a6932b29882b83220deca",
+      "precision_decorations": []
+    },
+    "small-8aa2595a969b.spv": {
+      "source": "source/network-fp16-20261027/f04-8aa2595a969b/kernel.comp",
+      "defines": [],
+      "raw_sha256": "67438afc6c7d98e16b43f466cbeecaaa265e4664ef095cdccf14b5417d2bafc7",
+      "sha256": "67438afc6c7d98e16b43f466cbeecaaa265e4664ef095cdccf14b5417d2bafc7",
+      "precision_decorations": []
+    },
+    "small-77c63dc928ba.spv": {
+      "source": "source/network-fp16-20261027/f05-77c63dc928ba/kernel.comp",
+      "defines": [],
+      "raw_sha256": "a5043e635ca94f2ea3af14ed0e30d398e9d4db570d4501a4d2c74603267a5a43",
+      "sha256": "a5043e635ca94f2ea3af14ed0e30d398e9d4db570d4501a4d2c74603267a5a43",
+      "precision_decorations": []
+    },
+    "small-ca587aa46abe.spv": {
+      "source": "source/network-fp16-20261027/f06-ca587aa46abe/kernel.comp",
+      "defines": [],
+      "raw_sha256": "b304a9190f9653740f20313a50545088b2d9927ecedc0f80f25cc76d3a9bd1b9",
+      "sha256": "b304a9190f9653740f20313a50545088b2d9927ecedc0f80f25cc76d3a9bd1b9",
+      "precision_decorations": []
+    },
+    "small-cfcb325ee6cc.spv": {
+      "source": "source/network-small-20261028/small-cfcb325ee6cc/kernel.comp",
+      "defines": [],
+      "raw_sha256": "cfcb325ee6cc2740a81a4fdb1c30d7599e2ed08a60e130a418810ad92634545e",
+      "sha256": "cfcb325ee6cc2740a81a4fdb1c30d7599e2ed08a60e130a418810ad92634545e",
+      "precision_decorations": [
+        {
+          "position": 346,
+          "words": [
+            196679,
+            316,
+            42
+          ]
+        },
+        {
+          "position": 347,
+          "words": [
+            196679,
+            344,
+            42
+          ]
+        },
+        {
+          "position": 348,
+          "words": [
+            196679,
+            369,
+            42
+          ]
+        },
+        {
+          "position": 349,
+          "words": [
+            196679,
+            394,
+            42
+          ]
+        },
+        {
+          "position": 355,
+          "words": [
+            196679,
+            752,
+            42
+          ]
+        },
+        {
+          "position": 356,
+          "words": [
+            196679,
+            756,
+            42
+          ]
+        },
+        {
+          "position": 357,
+          "words": [
+            196679,
+            760,
+            42
+          ]
+        },
+        {
+          "position": 358,
+          "words": [
+            196679,
+            763,
+            42
+          ]
+        },
+        {
+          "position": 359,
+          "words": [
+            196679,
+            1019,
+            42
+          ]
+        },
+        {
+          "position": 360,
+          "words": [
+            196679,
+            1023,
+            42
+          ]
+        },
+        {
+          "position": 361,
+          "words": [
+            196679,
+            1027,
+            42
+          ]
+        },
+        {
+          "position": 362,
+          "words": [
+            196679,
+            1029,
+            42
+          ]
+        },
+        {
+          "position": 363,
+          "words": [
+            196679,
+            1280,
+            42
+          ]
+        },
+        {
+          "position": 364,
+          "words": [
+            196679,
+            1284,
+            42
+          ]
+        },
+        {
+          "position": 365,
+          "words": [
+            196679,
+            1288,
+            42
+          ]
+        },
+        {
+          "position": 366,
+          "words": [
+            196679,
+            1290,
+            42
+          ]
+        },
+        {
+          "position": 367,
+          "words": [
+            196679,
+            1541,
+            42
+          ]
+        },
+        {
+          "position": 368,
+          "words": [
+            196679,
+            1545,
+            42
+          ]
+        },
+        {
+          "position": 369,
+          "words": [
+            196679,
+            1549,
+            42
+          ]
+        },
+        {
+          "position": 370,
+          "words": [
+            196679,
+            1551,
+            42
+          ]
+        }
+      ]
+    },
+    "small-958c9719869c.spv": {
+      "source": "source/network-fp16-20261027/f04-958c9719869c/kernel.comp",
+      "defines": [],
+      "raw_sha256": "a374fe32fcf15d8f892a46ba02d093414eae5670ea2b2f50f855feaf4f6f74cf",
+      "sha256": "a374fe32fcf15d8f892a46ba02d093414eae5670ea2b2f50f855feaf4f6f74cf",
+      "precision_decorations": []
+    },
+    "small-3c26fc5338aa.spv": {
+      "source": "source/network-fp16-20261027/f05-3c26fc5338aa/kernel.comp",
+      "defines": [],
+      "raw_sha256": "ff573debd8f90990d62c42bd0a75a37376543cadbd8333c7fbe2920e818044c1",
+      "sha256": "ff573debd8f90990d62c42bd0a75a37376543cadbd8333c7fbe2920e818044c1",
+      "precision_decorations": []
+    },
+    "small-7c839f246426.spv": {
+      "source": "source/network-fp16-20261027/f06-7c839f246426/kernel.comp",
+      "defines": [],
+      "raw_sha256": "f8dba46801601e7bec23d292d61345c94830e339e4b5f605ce05c82c57d37d06",
+      "sha256": "f8dba46801601e7bec23d292d61345c94830e339e4b5f605ce05c82c57d37d06",
+      "precision_decorations": []
+    },
+    "small-af2304e5c6e5.spv": {
+      "source": "source/network-fp16-20261027/f07-af2304e5c6e5/kernel.comp",
+      "defines": [],
+      "raw_sha256": "329ef82be5098e54e79ac6e7c451aef376b8f60c5fe96f7d31e006de77e5169c",
+      "sha256": "329ef82be5098e54e79ac6e7c451aef376b8f60c5fe96f7d31e006de77e5169c",
+      "precision_decorations": []
+    },
+    "small-dc5f1634de7e.spv": {
+      "source": "source/network-fp16-20261027/f04-dc5f1634de7e/kernel.comp",
+      "defines": [],
+      "raw_sha256": "cab385d3cca221719c667df9fd9ccd6a38088a3cba3ef6e8484acfe20821eff6",
+      "sha256": "cab385d3cca221719c667df9fd9ccd6a38088a3cba3ef6e8484acfe20821eff6",
+      "precision_decorations": []
+    },
+    "small-236aad961967.spv": {
+      "source": "source/network-fp16-20261027/f05-236aad961967/kernel.comp",
+      "defines": [],
+      "raw_sha256": "314e62e5d7f9276330b2223b9f0f65face7fc960540b9591a34526e2ed6229a9",
+      "sha256": "314e62e5d7f9276330b2223b9f0f65face7fc960540b9591a34526e2ed6229a9",
+      "precision_decorations": []
+    },
+    "small-8f592cf9576f.spv": {
+      "source": "source/network-fp16-20261027/f06-8f592cf9576f/kernel.comp",
+      "defines": [],
+      "raw_sha256": "57577e1c5ceef98f90a7a48433c8877ed9f8df6c88f7fe192c8177da724de2b5",
+      "sha256": "57577e1c5ceef98f90a7a48433c8877ed9f8df6c88f7fe192c8177da724de2b5",
+      "precision_decorations": []
+    },
+    "small-72a833210f14.spv": {
+      "source": "source/network-small-20261028/small-72a833210f14/kernel.comp",
+      "defines": [],
+      "raw_sha256": "72a833210f145318e4acd44d2b340ee4e9ffc252de71a98c1bdbaa0f55589c5a",
+      "sha256": "72a833210f145318e4acd44d2b340ee4e9ffc252de71a98c1bdbaa0f55589c5a",
+      "precision_decorations": [
+        {
+          "position": 293,
+          "words": [
+            196679,
+            789,
+            42
+          ]
+        },
+        {
+          "position": 294,
+          "words": [
+            196679,
+            793,
+            42
+          ]
+        },
+        {
+          "position": 295,
+          "words": [
+            196679,
+            797,
+            42
+          ]
+        },
+        {
+          "position": 296,
+          "words": [
+            196679,
+            800,
+            42
+          ]
+        }
+      ]
+    },
+    "small-32291c7ea61b.spv": {
+      "source": "source/network-fp16-20261027/f08-32291c7ea61b/kernel.comp",
+      "defines": [],
+      "raw_sha256": "194f28e906137bdb03c6acfc1e8479a718849ba3bed8ad74e99e525fac2b5f01",
+      "sha256": "194f28e906137bdb03c6acfc1e8479a718849ba3bed8ad74e99e525fac2b5f01",
+      "precision_decorations": []
+    },
+    "small-a5aeb6a56f86.spv": {
+      "source": "source/network-fp16-20261027/f09-a5aeb6a56f86/kernel.comp",
+      "defines": [],
+      "raw_sha256": "9724793cb783a57f36e506d3824c399972162eb362ce11e2f4058238241a455d",
+      "sha256": "9724793cb783a57f36e506d3824c399972162eb362ce11e2f4058238241a455d",
+      "precision_decorations": []
+    },
+    "small-228dee8a437d.spv": {
+      "source": "source/network-fp16-20261027/f10-228dee8a437d/kernel.comp",
+      "defines": [],
+      "raw_sha256": "9c45e9b015fe1b380a471981662a540c26bfd656c669a4b500ed52b6a73146bb",
+      "sha256": "9c45e9b015fe1b380a471981662a540c26bfd656c669a4b500ed52b6a73146bb",
+      "precision_decorations": []
+    },
+    "small-cc70e2d68b85.spv": {
+      "source": "source/network/c2_S23_split_projection_swap/split_projection_swap.comp",
+      "defines": [
+        "-DKIND=1"
+      ],
+      "raw_sha256": "e11da74149207b203376b2d9af5d25e0af1033546cec92d29b2c729ff99e7bd4",
+      "sha256": "e11da74149207b203376b2d9af5d25e0af1033546cec92d29b2c729ff99e7bd4",
+      "precision_decorations": []
+    },
+    "small-d9f2ac3eb45e.spv": {
+      "source": "source/network-fp16-20261027/f12-d9f2ac3eb45e/kernel.comp",
+      "defines": [
+        "-DKIND=2"
+      ],
+      "raw_sha256": "523d94eeb0b3a3bc01ab8bf9727640110aebe25eff2c8c62d9e8fc3f31929d4d",
+      "sha256": "523d94eeb0b3a3bc01ab8bf9727640110aebe25eff2c8c62d9e8fc3f31929d4d",
+      "precision_decorations": []
+    },
+    "small-7407f93cd518.spv": {
+      "source": "source/network-fp16-20261027/f12-7407f93cd518/kernel.comp",
+      "defines": [
+        "-DKIND=3"
+      ],
+      "raw_sha256": "7407f93cd5185d7bbba060e3a5fe705d641de31b934e76251527e1674ade62d5",
+      "sha256": "7407f93cd5185d7bbba060e3a5fe705d641de31b934e76251527e1674ade62d5",
+      "precision_decorations": []
+    },
+    "small-e8747d59afef.spv": {
+      "source": "source/network-fp16-20261027/f13-e8747d59afef/kernel.comp",
+      "defines": [],
+      "raw_sha256": "e8747d59afef4bdd97625e4d627b442517a22197c1f98503a51ab3d5bb144fda",
+      "sha256": "e8747d59afef4bdd97625e4d627b442517a22197c1f98503a51ab3d5bb144fda",
+      "precision_decorations": []
+    },
+    "small-bc629c9b8e24.spv": {
+      "source": "source/network-fp16-20261027/f13-bc629c9b8e24/kernel.comp",
+      "defines": [],
+      "raw_sha256": "e4efe716c39f4b34bdc2794a692cf96201f9f8a19f9a16d5368b1b0f1152b2ba",
+      "sha256": "e4efe716c39f4b34bdc2794a692cf96201f9f8a19f9a16d5368b1b0f1152b2ba",
+      "precision_decorations": []
+    },
+    "small-72e2df7c7b1e.spv": {
+      "source": "source/network-fp16-20261027/f14-72e2df7c7b1e/kernel.comp",
+      "defines": [],
+      "raw_sha256": "8249fa54d3dd799f585bac19d840b65306796bc19190f9d600da4832a85d9106",
+      "sha256": "8249fa54d3dd799f585bac19d840b65306796bc19190f9d600da4832a85d9106",
+      "precision_decorations": []
+    },
+    "small-c9971af497d2.spv": {
+      "source": "source/network-fp16-20261027/f15-c9971af497d2/kernel.comp",
+      "defines": [],
+      "raw_sha256": "0e1493d8a67f41e7cc26d48c8f9752a7ef889b9eab26555cd24e3997afbdefb6",
+      "sha256": "0e1493d8a67f41e7cc26d48c8f9752a7ef889b9eab26555cd24e3997afbdefb6",
+      "precision_decorations": []
+    },
+    "small-55e04be51248.spv": {
+      "source": "source/network-fp16-20261027/f16-55e04be51248/kernel.comp",
+      "defines": [],
+      "raw_sha256": "55e04be5124863a5aa0a6877761274614e5c50e0604b8fe555b0f215b1cb9b51",
+      "sha256": "55e04be5124863a5aa0a6877761274614e5c50e0604b8fe555b0f215b1cb9b51",
+      "precision_decorations": []
+    },
+    "small-8f3be14045d6.spv": {
+      "source": "source/network-fp16-20261027/f17-8f3be14045d6/kernel.comp",
+      "defines": [
+        "-DPROJECT_PAIR=2"
+      ],
+      "raw_sha256": "8f3be14045d658c2daf78b1a1385e8e287dbed85240e8ece9df9277e5338b6c4",
+      "sha256": "8f3be14045d658c2daf78b1a1385e8e287dbed85240e8ece9df9277e5338b6c4",
+      "precision_decorations": [
+        {
+          "position": 155,
+          "words": [
+            196679,
+            220,
+            42
+          ]
+        },
+        {
+          "position": 156,
+          "words": [
+            196679,
+            223,
+            42
+          ]
+        },
+        {
+          "position": 164,
+          "words": [
+            196679,
+            244,
+            42
+          ]
+        },
+        {
+          "position": 165,
+          "words": [
+            196679,
+            263,
+            42
+          ]
+        },
+        {
+          "position": 166,
+          "words": [
+            196679,
+            282,
+            42
+          ]
+        },
+        {
+          "position": 167,
+          "words": [
+            196679,
+            299,
+            42
+          ]
+        },
+        {
+          "position": 168,
+          "words": [
+            196679,
+            303,
+            42
+          ]
+        },
+        {
+          "position": 169,
+          "words": [
+            196679,
+            314,
+            42
+          ]
+        },
+        {
+          "position": 170,
+          "words": [
+            196679,
+            316,
+            42
+          ]
+        }
+      ]
+    },
+    "small-bbd7334a0d49.spv": {
+      "source": "source/network/c3x_pre_c256_sx1/c3x_pre_c256_sx1.comp",
+      "defines": [],
+      "raw_sha256": "bbd7334a0d49c2708db31a5b15a2d05a4a4741684521e4122e1ddfabc1771607",
+      "sha256": "bbd7334a0d49c2708db31a5b15a2d05a4a4741684521e4122e1ddfabc1771607",
+      "precision_decorations": [
+        {
+          "position": 151,
+          "words": [
+            196679,
+            508,
+            42
+          ]
+        },
+        {
+          "position": 157,
+          "words": [
+            196679,
+            562,
+            42
+          ]
+        },
+        {
+          "position": 158,
+          "words": [
+            196679,
+            566,
+            42
+          ]
+        }
+      ]
+    },
+    "small-572009f4c09f.spv": {
+      "source": "source/network/c3x_body_c256_r09/c3x_body_c256_r09.comp",
+      "defines": [],
+      "raw_sha256": "3e546b4acbbd79acdf9f0f1ec616d63f410829aa5f845094cbfb81ddd2d5f45e",
+      "sha256": "3e546b4acbbd79acdf9f0f1ec616d63f410829aa5f845094cbfb81ddd2d5f45e",
+      "precision_decorations": []
+    },
+    "small-47b20f2fe57d.spv": {
+      "source": "source/network-fp16-20261027/f18-47b20f2fe57d/kernel.comp",
+      "defines": [],
+      "raw_sha256": "4d084e3ad62e88eb572ac48f51f5382c95d5a66f2b15c20a9100d73de2d2cd69",
+      "sha256": "4d084e3ad62e88eb572ac48f51f5382c95d5a66f2b15c20a9100d73de2d2cd69",
+      "precision_decorations": []
+    },
+    "small-eb82244a26dc.spv": {
+      "source": "source/network/c3x_pre_c128/c3x_pre_c128.comp",
+      "defines": [],
+      "raw_sha256": "eb82244a26dc9b25f6813b82fcccf03646b75426b9c2afcf409ef003091ed6fd",
+      "sha256": "eb82244a26dc9b25f6813b82fcccf03646b75426b9c2afcf409ef003091ed6fd",
+      "precision_decorations": [
+        {
+          "position": 147,
+          "words": [
+            196679,
+            528,
+            42
+          ]
+        },
+        {
+          "position": 153,
+          "words": [
+            196679,
+            582,
+            42
+          ]
+        },
+        {
+          "position": 154,
+          "words": [
+            196679,
+            586,
+            42
+          ]
+        }
+      ]
+    },
+    "small-12569d767adf.spv": {
+      "source": "source/network/c3x_body_c128_r09/c3x_body_c128_r09.comp",
+      "defines": [],
+      "raw_sha256": "11600c0369f45dac5d7fa94147d285afbe73906da58ff19cb42e460cababdf87",
+      "sha256": "11600c0369f45dac5d7fa94147d285afbe73906da58ff19cb42e460cababdf87",
+      "precision_decorations": []
+    },
+    "small-ffde3c3d2379.spv": {
+      "source": "source/network-fp16-20261027/f18-ffde3c3d2379/kernel.comp",
+      "defines": [],
+      "raw_sha256": "fdb39b98b032824e50f66c52d8dba0b8441c72e27e3a3fb53038932bfc0efe38",
+      "sha256": "fdb39b98b032824e50f66c52d8dba0b8441c72e27e3a3fb53038932bfc0efe38",
+      "precision_decorations": []
+    },
+    "small-46ccf24f4bea.spv": {
+      "source": "source/network/c3x_pre_c64_sx1/c3x_pre_c64_sx1.comp",
+      "defines": [],
+      "raw_sha256": "46ccf24f4bea3e250ed01bd03864e40b77f5279f0d3626e3e42f820c69ef0711",
+      "sha256": "46ccf24f4bea3e250ed01bd03864e40b77f5279f0d3626e3e42f820c69ef0711",
+      "precision_decorations": [
+        {
+          "position": 151,
+          "words": [
+            196679,
+            539,
+            42
+          ]
+        },
+        {
+          "position": 157,
+          "words": [
+            196679,
+            593,
+            42
+          ]
+        },
+        {
+          "position": 158,
+          "words": [
+            196679,
+            597,
+            42
+          ]
+        }
+      ]
+    },
+    "small-542231a6d6f7.spv": {
+      "source": "source/network/c3x_body_c64/c3x_body_c64.comp",
+      "defines": [],
+      "raw_sha256": "9b6a7c5ead4275ae99f3628fa437ea923a7786830eecee007c1da0774537552f",
+      "sha256": "9b6a7c5ead4275ae99f3628fa437ea923a7786830eecee007c1da0774537552f",
+      "precision_decorations": []
+    },
+    "small-af74ba2043c4.spv": {
+      "source": "source/network-fp16-20261027/f18-af74ba2043c4/kernel.comp",
+      "defines": [],
+      "raw_sha256": "d07dba5c6c9031af86585bd8b2e3197b7ecac88e1c240c810d34fdeb8e83c8b0",
+      "sha256": "d07dba5c6c9031af86585bd8b2e3197b7ecac88e1c240c810d34fdeb8e83c8b0",
+      "precision_decorations": []
+    },
+    "small-ed2ddc36df14.spv": {
+      "source": "source/network-small-20261028/small-ed2ddc36df14/kernel.comp",
+      "defines": [],
+      "raw_sha256": "288686c56ddbce6cabc62a56ebcbac49703ece3e6f71e817b15850e9db6b8b7b",
+      "sha256": "ed2ddc36df146fa9c882af2a337ec6cda5e6531b7354a79bd46dded610a984c7",
+      "precision_decorations": [
+        {
+          "position": 876,
+          "words": [
+            196679,
+            326,
+            42
+          ]
+        },
+        {
+          "position": 877,
+          "words": [
+            196679,
+            330,
+            42
+          ]
+        },
+        {
+          "position": 878,
+          "words": [
+            196679,
+            334,
+            42
+          ]
+        },
+        {
+          "position": 879,
+          "words": [
+            196679,
+            338,
+            42
+          ]
+        },
+        {
+          "position": 880,
+          "words": [
+            196679,
+            342,
+            42
+          ]
+        },
+        {
+          "position": 881,
+          "words": [
+            196679,
+            346,
+            42
+          ]
+        },
+        {
+          "position": 882,
+          "words": [
+            196679,
+            369,
+            42
+          ]
+        },
+        {
+          "position": 883,
+          "words": [
+            196679,
+            373,
+            42
+          ]
+        },
+        {
+          "position": 884,
+          "words": [
+            196679,
+            385,
+            42
+          ]
+        },
+        {
+          "position": 885,
+          "words": [
+            196679,
+            389,
+            42
+          ]
+        },
+        {
+          "position": 886,
+          "words": [
+            196679,
+            400,
+            42
+          ]
+        },
+        {
+          "position": 887,
+          "words": [
+            196679,
+            404,
+            42
+          ]
+        },
+        {
+          "position": 888,
+          "words": [
+            196679,
+            415,
+            42
+          ]
+        },
+        {
+          "position": 889,
+          "words": [
+            196679,
+            419,
+            42
+          ]
+        },
+        {
+          "position": 909,
+          "words": [
+            196679,
+            837,
+            42
+          ]
+        },
+        {
+          "position": 915,
+          "words": [
+            196679,
+            884,
+            42
+          ]
+        },
+        {
+          "position": 916,
+          "words": [
+            196679,
+            888,
+            42
+          ]
+        },
+        {
+          "position": 917,
+          "words": [
+            196679,
+            897,
+            42
+          ]
+        },
+        {
+          "position": 918,
+          "words": [
+            196679,
+            900,
+            42
+          ]
+        },
+        {
+          "position": 919,
+          "words": [
+            196679,
+            970,
+            42
+          ]
+        },
+        {
+          "position": 920,
+          "words": [
+            196679,
+            973,
+            42
+          ]
+        },
+        {
+          "position": 921,
+          "words": [
+            196679,
+            984,
+            42
+          ]
+        },
+        {
+          "position": 922,
+          "words": [
+            196679,
+            985,
+            42
+          ]
+        },
+        {
+          "position": 923,
+          "words": [
+            196679,
+            989,
+            42
+          ]
+        },
+        {
+          "position": 924,
+          "words": [
+            196679,
+            1010,
+            42
+          ]
+        },
+        {
+          "position": 925,
+          "words": [
+            196679,
+            1011,
+            42
+          ]
+        },
+        {
+          "position": 926,
+          "words": [
+            196679,
+            1015,
+            42
+          ]
+        },
+        {
+          "position": 927,
+          "words": [
+            196679,
+            1035,
+            42
+          ]
+        },
+        {
+          "position": 928,
+          "words": [
+            196679,
+            1038,
+            42
+          ]
+        },
+        {
+          "position": 929,
+          "words": [
+            196679,
+            1049,
+            42
+          ]
+        },
+        {
+          "position": 930,
+          "words": [
+            196679,
+            1050,
+            42
+          ]
+        },
+        {
+          "position": 931,
+          "words": [
+            196679,
+            1054,
+            42
+          ]
+        },
+        {
+          "position": 932,
+          "words": [
+            196679,
+            1074,
+            42
+          ]
+        },
+        {
+          "position": 933,
+          "words": [
+            196679,
+            1075,
+            42
+          ]
+        },
+        {
+          "position": 934,
+          "words": [
+            196679,
+            1079,
+            42
+          ]
+        },
+        {
+          "position": 935,
+          "words": [
+            196679,
+            1098,
+            42
+          ]
+        },
+        {
+          "position": 936,
+          "words": [
+            196679,
+            1101,
+            42
+          ]
+        },
+        {
+          "position": 937,
+          "words": [
+            196679,
+            1112,
+            42
+          ]
+        },
+        {
+          "position": 938,
+          "words": [
+            196679,
+            1113,
+            42
+          ]
+        },
+        {
+          "position": 939,
+          "words": [
+            196679,
+            1117,
+            42
+          ]
+        },
+        {
+          "position": 940,
+          "words": [
+            196679,
+            1137,
+            42
+          ]
+        },
+        {
+          "position": 941,
+          "words": [
+            196679,
+            1138,
+            42
+          ]
+        },
+        {
+          "position": 942,
+          "words": [
+            196679,
+            1142,
+            42
+          ]
+        },
+        {
+          "position": 943,
+          "words": [
+            196679,
+            1162,
+            42
+          ]
+        },
+        {
+          "position": 944,
+          "words": [
+            196679,
+            1165,
+            42
+          ]
+        },
+        {
+          "position": 945,
+          "words": [
+            196679,
+            1176,
+            42
+          ]
+        },
+        {
+          "position": 946,
+          "words": [
+            196679,
+            1177,
+            42
+          ]
+        },
+        {
+          "position": 947,
+          "words": [
+            196679,
+            1181,
+            42
+          ]
+        },
+        {
+          "position": 948,
+          "words": [
+            196679,
+            1201,
+            42
+          ]
+        },
+        {
+          "position": 949,
+          "words": [
+            196679,
+            1202,
+            42
+          ]
+        },
+        {
+          "position": 950,
+          "words": [
+            196679,
+            1206,
+            42
+          ]
+        },
+        {
+          "position": 951,
+          "words": [
+            196679,
+            1225,
+            42
+          ]
+        },
+        {
+          "position": 952,
+          "words": [
+            196679,
+            1228,
+            42
+          ]
+        },
+        {
+          "position": 953,
+          "words": [
+            196679,
+            1239,
+            42
+          ]
+        },
+        {
+          "position": 954,
+          "words": [
+            196679,
+            1240,
+            42
+          ]
+        },
+        {
+          "position": 955,
+          "words": [
+            196679,
+            1244,
+            42
+          ]
+        },
+        {
+          "position": 956,
+          "words": [
+            196679,
+            1265,
+            42
+          ]
+        },
+        {
+          "position": 957,
+          "words": [
+            196679,
+            1266,
+            42
+          ]
+        },
+        {
+          "position": 958,
+          "words": [
+            196679,
+            1270,
+            42
+          ]
+        },
+        {
+          "position": 959,
+          "words": [
+            196679,
+            1291,
+            42
+          ]
+        },
+        {
+          "position": 960,
+          "words": [
+            196679,
+            1294,
+            42
+          ]
+        },
+        {
+          "position": 961,
+          "words": [
+            196679,
+            1305,
+            42
+          ]
+        },
+        {
+          "position": 962,
+          "words": [
+            196679,
+            1306,
+            42
+          ]
+        },
+        {
+          "position": 963,
+          "words": [
+            196679,
+            1310,
+            42
+          ]
+        },
+        {
+          "position": 964,
+          "words": [
+            196679,
+            1330,
+            42
+          ]
+        },
+        {
+          "position": 965,
+          "words": [
+            196679,
+            1331,
+            42
+          ]
+        },
+        {
+          "position": 966,
+          "words": [
+            196679,
+            1335,
+            42
+          ]
+        },
+        {
+          "position": 967,
+          "words": [
+            196679,
+            1355,
+            42
+          ]
+        },
+        {
+          "position": 968,
+          "words": [
+            196679,
+            1358,
+            42
+          ]
+        },
+        {
+          "position": 969,
+          "words": [
+            196679,
+            1369,
+            42
+          ]
+        },
+        {
+          "position": 970,
+          "words": [
+            196679,
+            1370,
+            42
+          ]
+        },
+        {
+          "position": 971,
+          "words": [
+            196679,
+            1374,
+            42
+          ]
+        },
+        {
+          "position": 972,
+          "words": [
+            196679,
+            1394,
+            42
+          ]
+        },
+        {
+          "position": 973,
+          "words": [
+            196679,
+            1395,
+            42
+          ]
+        },
+        {
+          "position": 974,
+          "words": [
+            196679,
+            1399,
+            42
+          ]
+        },
+        {
+          "position": 975,
+          "words": [
+            196679,
+            1419,
+            42
+          ]
+        },
+        {
+          "position": 976,
+          "words": [
+            196679,
+            1422,
+            42
+          ]
+        },
+        {
+          "position": 977,
+          "words": [
+            196679,
+            1433,
+            42
+          ]
+        },
+        {
+          "position": 978,
+          "words": [
+            196679,
+            1434,
+            42
+          ]
+        },
+        {
+          "position": 979,
+          "words": [
+            196679,
+            1438,
+            42
+          ]
+        },
+        {
+          "position": 980,
+          "words": [
+            196679,
+            1458,
+            42
+          ]
+        },
+        {
+          "position": 981,
+          "words": [
+            196679,
+            1459,
+            42
+          ]
+        },
+        {
+          "position": 982,
+          "words": [
+            196679,
+            1463,
+            42
+          ]
+        },
+        {
+          "position": 993,
+          "words": [
+            196679,
+            1538,
+            42
+          ]
+        },
+        {
+          "position": 994,
+          "words": [
+            196679,
+            1579,
+            42
+          ]
+        },
+        {
+          "position": 995,
+          "words": [
+            196679,
+            1619,
+            42
+          ]
+        },
+        {
+          "position": 996,
+          "words": [
+            196679,
+            1660,
+            42
+          ]
+        },
+        {
+          "position": 1002,
+          "words": [
+            196679,
+            3338,
+            42
+          ]
+        },
+        {
+          "position": 1003,
+          "words": [
+            196679,
+            3341,
+            42
+          ]
+        },
+        {
+          "position": 1004,
+          "words": [
+            196679,
+            3348,
+            42
+          ]
+        },
+        {
+          "position": 1005,
+          "words": [
+            196679,
+            3355,
+            42
+          ]
+        },
+        {
+          "position": 1006,
+          "words": [
+            196679,
+            3358,
+            42
+          ]
+        },
+        {
+          "position": 1007,
+          "words": [
+            196679,
+            3365,
+            42
+          ]
+        },
+        {
+          "position": 1008,
+          "words": [
+            196679,
+            3386,
+            42
+          ]
+        },
+        {
+          "position": 1009,
+          "words": [
+            196679,
+            3389,
+            42
+          ]
+        },
+        {
+          "position": 1010,
+          "words": [
+            196679,
+            3396,
+            42
+          ]
+        },
+        {
+          "position": 1011,
+          "words": [
+            196679,
+            3403,
+            42
+          ]
+        },
+        {
+          "position": 1012,
+          "words": [
+            196679,
+            3406,
+            42
+          ]
+        },
+        {
+          "position": 1013,
+          "words": [
+            196679,
+            3413,
+            42
+          ]
+        },
+        {
+          "position": 1014,
+          "words": [
+            196679,
+            3434,
+            42
+          ]
+        },
+        {
+          "position": 1015,
+          "words": [
+            196679,
+            3437,
+            42
+          ]
+        },
+        {
+          "position": 1016,
+          "words": [
+            196679,
+            3444,
+            42
+          ]
+        },
+        {
+          "position": 1017,
+          "words": [
+            196679,
+            3451,
+            42
+          ]
+        },
+        {
+          "position": 1018,
+          "words": [
+            196679,
+            3454,
+            42
+          ]
+        },
+        {
+          "position": 1019,
+          "words": [
+            196679,
+            3461,
+            42
+          ]
+        },
+        {
+          "position": 1020,
+          "words": [
+            196679,
+            3482,
+            42
+          ]
+        },
+        {
+          "position": 1021,
+          "words": [
+            196679,
+            3485,
+            42
+          ]
+        },
+        {
+          "position": 1022,
+          "words": [
+            196679,
+            3492,
+            42
+          ]
+        },
+        {
+          "position": 1023,
+          "words": [
+            196679,
+            3499,
+            42
+          ]
+        },
+        {
+          "position": 1024,
+          "words": [
+            196679,
+            3502,
+            42
+          ]
+        },
+        {
+          "position": 1025,
+          "words": [
+            196679,
+            3509,
+            42
+          ]
+        },
+        {
+          "position": 1026,
+          "words": [
+            196679,
+            3628,
+            42
+          ]
+        },
+        {
+          "position": 1027,
+          "words": [
+            196679,
+            3631,
+            42
+          ]
+        },
+        {
+          "position": 1028,
+          "words": [
+            196679,
+            3638,
+            42
+          ]
+        },
+        {
+          "position": 1029,
+          "words": [
+            196679,
+            3645,
+            42
+          ]
+        },
+        {
+          "position": 1030,
+          "words": [
+            196679,
+            3648,
+            42
+          ]
+        },
+        {
+          "position": 1031,
+          "words": [
+            196679,
+            3655,
+            42
+          ]
+        },
+        {
+          "position": 1032,
+          "words": [
+            196679,
+            3676,
+            42
+          ]
+        },
+        {
+          "position": 1033,
+          "words": [
+            196679,
+            3679,
+            42
+          ]
+        },
+        {
+          "position": 1034,
+          "words": [
+            196679,
+            3686,
+            42
+          ]
+        },
+        {
+          "position": 1035,
+          "words": [
+            196679,
+            3693,
+            42
+          ]
+        },
+        {
+          "position": 1036,
+          "words": [
+            196679,
+            3696,
+            42
+          ]
+        },
+        {
+          "position": 1037,
+          "words": [
+            196679,
+            3703,
+            42
+          ]
+        },
+        {
+          "position": 1038,
+          "words": [
+            196679,
+            3724,
+            42
+          ]
+        },
+        {
+          "position": 1039,
+          "words": [
+            196679,
+            3727,
+            42
+          ]
+        },
+        {
+          "position": 1040,
+          "words": [
+            196679,
+            3734,
+            42
+          ]
+        },
+        {
+          "position": 1041,
+          "words": [
+            196679,
+            3741,
+            42
+          ]
+        },
+        {
+          "position": 1042,
+          "words": [
+            196679,
+            3744,
+            42
+          ]
+        },
+        {
+          "position": 1043,
+          "words": [
+            196679,
+            3751,
+            42
+          ]
+        },
+        {
+          "position": 1044,
+          "words": [
+            196679,
+            3772,
+            42
+          ]
+        },
+        {
+          "position": 1045,
+          "words": [
+            196679,
+            3775,
+            42
+          ]
+        },
+        {
+          "position": 1046,
+          "words": [
+            196679,
+            3782,
+            42
+          ]
+        },
+        {
+          "position": 1047,
+          "words": [
+            196679,
+            3789,
+            42
+          ]
+        },
+        {
+          "position": 1048,
+          "words": [
+            196679,
+            3792,
+            42
+          ]
+        },
+        {
+          "position": 1049,
+          "words": [
+            196679,
+            3799,
+            42
+          ]
+        },
+        {
+          "position": 1050,
+          "words": [
+            196679,
+            3966,
+            42
+          ]
+        },
+        {
+          "position": 1051,
+          "words": [
+            196679,
+            3974,
+            42
+          ]
+        },
+        {
+          "position": 1052,
+          "words": [
+            196679,
+            3982,
+            42
+          ]
+        },
+        {
+          "position": 1053,
+          "words": [
+            196679,
+            3990,
+            42
+          ]
+        },
+        {
+          "position": 1054,
+          "words": [
+            196679,
+            4049,
+            42
+          ]
+        },
+        {
+          "position": 1055,
+          "words": [
+            196679,
+            4057,
+            42
+          ]
+        },
+        {
+          "position": 1056,
+          "words": [
+            196679,
+            4065,
+            42
+          ]
+        },
+        {
+          "position": 1057,
+          "words": [
+            196679,
+            4073,
+            42
+          ]
+        },
+        {
+          "position": 1058,
+          "words": [
+            196679,
+            4156,
+            42
+          ]
+        },
+        {
+          "position": 1059,
+          "words": [
+            196679,
+            4164,
+            42
+          ]
+        },
+        {
+          "position": 1060,
+          "words": [
+            196679,
+            4172,
+            42
+          ]
+        },
+        {
+          "position": 1061,
+          "words": [
+            196679,
+            4180,
+            42
+          ]
+        },
+        {
+          "position": 1062,
+          "words": [
+            196679,
+            4239,
+            42
+          ]
+        },
+        {
+          "position": 1063,
+          "words": [
+            196679,
+            4247,
+            42
+          ]
+        },
+        {
+          "position": 1064,
+          "words": [
+            196679,
+            4255,
+            42
+          ]
+        },
+        {
+          "position": 1065,
+          "words": [
+            196679,
+            4263,
+            42
+          ]
+        },
+        {
+          "position": 1066,
+          "words": [
+            196679,
+            4346,
+            42
+          ]
+        },
+        {
+          "position": 1067,
+          "words": [
+            196679,
+            4354,
+            42
+          ]
+        },
+        {
+          "position": 1068,
+          "words": [
+            196679,
+            4362,
+            42
+          ]
+        },
+        {
+          "position": 1069,
+          "words": [
+            196679,
+            4370,
+            42
+          ]
+        },
+        {
+          "position": 1070,
+          "words": [
+            196679,
+            4429,
+            42
+          ]
+        },
+        {
+          "position": 1071,
+          "words": [
+            196679,
+            4437,
+            42
+          ]
+        },
+        {
+          "position": 1072,
+          "words": [
+            196679,
+            4445,
+            42
+          ]
+        },
+        {
+          "position": 1073,
+          "words": [
+            196679,
+            4453,
+            42
+          ]
+        },
+        {
+          "position": 1074,
+          "words": [
+            196679,
+            4536,
+            42
+          ]
+        },
+        {
+          "position": 1075,
+          "words": [
+            196679,
+            4544,
+            42
+          ]
+        },
+        {
+          "position": 1076,
+          "words": [
+            196679,
+            4552,
+            42
+          ]
+        },
+        {
+          "position": 1077,
+          "words": [
+            196679,
+            4560,
+            42
+          ]
+        },
+        {
+          "position": 1078,
+          "words": [
+            196679,
+            4619,
+            42
+          ]
+        },
+        {
+          "position": 1079,
+          "words": [
+            196679,
+            4627,
+            42
+          ]
+        },
+        {
+          "position": 1080,
+          "words": [
+            196679,
+            4635,
+            42
+          ]
+        },
+        {
+          "position": 1081,
+          "words": [
+            196679,
+            4643,
+            42
+          ]
+        },
+        {
+          "position": 1082,
+          "words": [
+            196679,
+            4703,
+            42
+          ]
+        },
+        {
+          "position": 1083,
+          "words": [
+            196679,
+            4706,
+            42
+          ]
+        },
+        {
+          "position": 1084,
+          "words": [
+            196679,
+            4731,
+            42
+          ]
+        },
+        {
+          "position": 1085,
+          "words": [
+            196679,
+            4734,
+            42
+          ]
+        },
+        {
+          "position": 1086,
+          "words": [
+            196679,
+            4759,
+            42
+          ]
+        },
+        {
+          "position": 1087,
+          "words": [
+            196679,
+            4762,
+            42
+          ]
+        },
+        {
+          "position": 1088,
+          "words": [
+            196679,
+            4787,
+            42
+          ]
+        },
+        {
+          "position": 1089,
+          "words": [
+            196679,
+            4790,
+            42
+          ]
+        },
+        {
+          "position": 1090,
+          "words": [
+            196679,
+            4808,
+            42
+          ]
+        },
+        {
+          "position": 1091,
+          "words": [
+            196679,
+            4826,
+            42
+          ]
+        },
+        {
+          "position": 1092,
+          "words": [
+            196679,
+            4844,
+            42
+          ]
+        },
+        {
+          "position": 1093,
+          "words": [
+            196679,
+            4852,
+            42
+          ]
+        },
+        {
+          "position": 1094,
+          "words": [
+            196679,
+            4858,
+            42
+          ]
+        },
+        {
+          "position": 1095,
+          "words": [
+            196679,
+            4865,
+            42
+          ]
+        },
+        {
+          "position": 1096,
+          "words": [
+            196679,
+            4871,
+            42
+          ]
+        },
+        {
+          "position": 1097,
+          "words": [
+            196679,
+            4877,
+            42
+          ]
+        },
+        {
+          "position": 1098,
+          "words": [
+            196679,
+            4883,
+            42
+          ]
+        },
+        {
+          "position": 1099,
+          "words": [
+            196679,
+            4889,
+            42
+          ]
+        },
+        {
+          "position": 1100,
+          "words": [
+            196679,
+            4895,
+            42
+          ]
+        },
+        {
+          "position": 1101,
+          "words": [
+            196679,
+            4901,
+            42
+          ]
+        },
+        {
+          "position": 1102,
+          "words": [
+            196679,
+            4907,
+            42
+          ]
+        },
+        {
+          "position": 1103,
+          "words": [
+            196679,
+            4934,
+            42
+          ]
+        },
+        {
+          "position": 1104,
+          "words": [
+            196679,
+            4937,
+            42
+          ]
+        },
+        {
+          "position": 1105,
+          "words": [
+            196679,
+            4962,
+            42
+          ]
+        },
+        {
+          "position": 1106,
+          "words": [
+            196679,
+            4965,
+            42
+          ]
+        },
+        {
+          "position": 1107,
+          "words": [
+            196679,
+            4990,
+            42
+          ]
+        },
+        {
+          "position": 1108,
+          "words": [
+            196679,
+            4993,
+            42
+          ]
+        },
+        {
+          "position": 1109,
+          "words": [
+            196679,
+            5018,
+            42
+          ]
+        },
+        {
+          "position": 1110,
+          "words": [
+            196679,
+            5021,
+            42
+          ]
+        },
+        {
+          "position": 1111,
+          "words": [
+            196679,
+            5039,
+            42
+          ]
+        },
+        {
+          "position": 1112,
+          "words": [
+            196679,
+            5057,
+            42
+          ]
+        },
+        {
+          "position": 1113,
+          "words": [
+            196679,
+            5075,
+            42
+          ]
+        },
+        {
+          "position": 1114,
+          "words": [
+            196679,
+            5081,
+            42
+          ]
+        },
+        {
+          "position": 1115,
+          "words": [
+            196679,
+            5087,
+            42
+          ]
+        },
+        {
+          "position": 1116,
+          "words": [
+            196679,
+            5094,
+            42
+          ]
+        },
+        {
+          "position": 1117,
+          "words": [
+            196679,
+            5100,
+            42
+          ]
+        },
+        {
+          "position": 1118,
+          "words": [
+            196679,
+            5106,
+            42
+          ]
+        },
+        {
+          "position": 1119,
+          "words": [
+            196679,
+            5112,
+            42
+          ]
+        },
+        {
+          "position": 1120,
+          "words": [
+            196679,
+            5118,
+            42
+          ]
+        },
+        {
+          "position": 1121,
+          "words": [
+            196679,
+            5124,
+            42
+          ]
+        },
+        {
+          "position": 1122,
+          "words": [
+            196679,
+            5130,
+            42
+          ]
+        },
+        {
+          "position": 1123,
+          "words": [
+            196679,
+            5136,
+            42
+          ]
+        },
+        {
+          "position": 1124,
+          "words": [
+            196679,
+            5224,
+            42
+          ]
+        },
+        {
+          "position": 1125,
+          "words": [
+            196679,
+            5227,
+            42
+          ]
+        },
+        {
+          "position": 1126,
+          "words": [
+            196679,
+            5252,
+            42
+          ]
+        },
+        {
+          "position": 1127,
+          "words": [
+            196679,
+            5255,
+            42
+          ]
+        },
+        {
+          "position": 1128,
+          "words": [
+            196679,
+            5280,
+            42
+          ]
+        },
+        {
+          "position": 1129,
+          "words": [
+            196679,
+            5283,
+            42
+          ]
+        },
+        {
+          "position": 1130,
+          "words": [
+            196679,
+            5308,
+            42
+          ]
+        },
+        {
+          "position": 1131,
+          "words": [
+            196679,
+            5311,
+            42
+          ]
+        },
+        {
+          "position": 1132,
+          "words": [
+            196679,
+            5329,
+            42
+          ]
+        },
+        {
+          "position": 1133,
+          "words": [
+            196679,
+            5347,
+            42
+          ]
+        },
+        {
+          "position": 1134,
+          "words": [
+            196679,
+            5365,
+            42
+          ]
+        },
+        {
+          "position": 1135,
+          "words": [
+            196679,
+            5371,
+            42
+          ]
+        },
+        {
+          "position": 1136,
+          "words": [
+            196679,
+            5377,
+            42
+          ]
+        },
+        {
+          "position": 1137,
+          "words": [
+            196679,
+            5384,
+            42
+          ]
+        },
+        {
+          "position": 1138,
+          "words": [
+            196679,
+            5390,
+            42
+          ]
+        },
+        {
+          "position": 1139,
+          "words": [
+            196679,
+            5396,
+            42
+          ]
+        },
+        {
+          "position": 1140,
+          "words": [
+            196679,
+            5402,
+            42
+          ]
+        },
+        {
+          "position": 1141,
+          "words": [
+            196679,
+            5408,
+            42
+          ]
+        },
+        {
+          "position": 1142,
+          "words": [
+            196679,
+            5414,
+            42
+          ]
+        },
+        {
+          "position": 1143,
+          "words": [
+            196679,
+            5420,
+            42
+          ]
+        },
+        {
+          "position": 1144,
+          "words": [
+            196679,
+            5426,
+            42
+          ]
+        },
+        {
+          "position": 1145,
+          "words": [
+            196679,
+            5453,
+            42
+          ]
+        },
+        {
+          "position": 1146,
+          "words": [
+            196679,
+            5456,
+            42
+          ]
+        },
+        {
+          "position": 1147,
+          "words": [
+            196679,
+            5481,
+            42
+          ]
+        },
+        {
+          "position": 1148,
+          "words": [
+            196679,
+            5484,
+            42
+          ]
+        },
+        {
+          "position": 1149,
+          "words": [
+            196679,
+            5509,
+            42
+          ]
+        },
+        {
+          "position": 1150,
+          "words": [
+            196679,
+            5512,
+            42
+          ]
+        },
+        {
+          "position": 1151,
+          "words": [
+            196679,
+            5537,
+            42
+          ]
+        },
+        {
+          "position": 1152,
+          "words": [
+            196679,
+            5540,
+            42
+          ]
+        },
+        {
+          "position": 1153,
+          "words": [
+            196679,
+            5558,
+            42
+          ]
+        },
+        {
+          "position": 1154,
+          "words": [
+            196679,
+            5576,
+            42
+          ]
+        },
+        {
+          "position": 1155,
+          "words": [
+            196679,
+            5594,
+            42
+          ]
+        },
+        {
+          "position": 1156,
+          "words": [
+            196679,
+            5600,
+            42
+          ]
+        },
+        {
+          "position": 1157,
+          "words": [
+            196679,
+            5606,
+            42
+          ]
+        },
+        {
+          "position": 1158,
+          "words": [
+            196679,
+            5613,
+            42
+          ]
+        },
+        {
+          "position": 1159,
+          "words": [
+            196679,
+            5619,
+            42
+          ]
+        },
+        {
+          "position": 1160,
+          "words": [
+            196679,
+            5625,
+            42
+          ]
+        },
+        {
+          "position": 1161,
+          "words": [
+            196679,
+            5631,
+            42
+          ]
+        },
+        {
+          "position": 1162,
+          "words": [
+            196679,
+            5637,
+            42
+          ]
+        },
+        {
+          "position": 1163,
+          "words": [
+            196679,
+            5643,
+            42
+          ]
+        },
+        {
+          "position": 1164,
+          "words": [
+            196679,
+            5649,
+            42
+          ]
+        },
+        {
+          "position": 1165,
+          "words": [
+            196679,
+            5655,
+            42
+          ]
+        },
+        {
+          "position": 1171,
+          "words": [
+            196679,
+            354,
+            42
+          ]
+        },
+        {
+          "position": 1172,
+          "words": [
+            196679,
+            358,
+            42
+          ]
+        }
+      ]
+    },
+    "small-215aca679aaa.spv": {
+      "source": "source/network-fp16-20261027/f20-215aca679aaa/kernel.comp",
+      "defines": [],
+      "raw_sha256": "0ca622d5fc56344907e5ca3e4d080f5f8f6f5dfb791a9a425c8d959a5fd7f8f1",
+      "sha256": "215aca679aaa2d5c36329ae45514efadae221ef4e8631121388b25052a7f7e32",
+      "precision_decorations": [
+        {
+          "position": 352,
+          "words": [
+            196679,
+            239,
+            42
+          ]
+        },
+        {
+          "position": 353,
+          "words": [
+            196679,
+            243,
+            42
+          ]
+        },
+        {
+          "position": 354,
+          "words": [
+            196679,
+            247,
+            42
+          ]
+        },
+        {
+          "position": 355,
+          "words": [
+            196679,
+            251,
+            42
+          ]
+        },
+        {
+          "position": 356,
+          "words": [
+            196679,
+            255,
+            42
+          ]
+        },
+        {
+          "position": 357,
+          "words": [
+            196679,
+            259,
+            42
+          ]
+        },
+        {
+          "position": 358,
+          "words": [
+            196679,
+            303,
+            42
+          ]
+        },
+        {
+          "position": 359,
+          "words": [
+            196679,
+            322,
+            42
+          ]
+        },
+        {
+          "position": 360,
+          "words": [
+            196679,
+            352,
+            42
+          ]
+        },
+        {
+          "position": 361,
+          "words": [
+            196679,
+            371,
+            42
+          ]
+        },
+        {
+          "position": 362,
+          "words": [
+            196679,
+            401,
+            42
+          ]
+        },
+        {
+          "position": 363,
+          "words": [
+            196679,
+            420,
+            42
+          ]
+        },
+        {
+          "position": 364,
+          "words": [
+            196679,
+            450,
+            42
+          ]
+        },
+        {
+          "position": 365,
+          "words": [
+            196679,
+            469,
+            42
+          ]
+        },
+        {
+          "position": 371,
+          "words": [
+            196679,
+            580,
+            42
+          ]
+        },
+        {
+          "position": 372,
+          "words": [
+            196679,
+            581,
+            42
+          ]
+        },
+        {
+          "position": 373,
+          "words": [
+            196679,
+            589,
+            42
+          ]
+        },
+        {
+          "position": 374,
+          "words": [
+            196679,
+            590,
+            42
+          ]
+        },
+        {
+          "position": 375,
+          "words": [
+            196679,
+            598,
+            42
+          ]
+        },
+        {
+          "position": 376,
+          "words": [
+            196679,
+            599,
+            42
+          ]
+        },
+        {
+          "position": 377,
+          "words": [
+            196679,
+            607,
+            42
+          ]
+        },
+        {
+          "position": 378,
+          "words": [
+            196679,
+            608,
+            42
+          ]
+        },
+        {
+          "position": 379,
+          "words": [
+            196679,
+            619,
+            42
+          ]
+        },
+        {
+          "position": 380,
+          "words": [
+            196679,
+            620,
+            42
+          ]
+        },
+        {
+          "position": 381,
+          "words": [
+            196679,
+            628,
+            42
+          ]
+        },
+        {
+          "position": 382,
+          "words": [
+            196679,
+            629,
+            42
+          ]
+        },
+        {
+          "position": 383,
+          "words": [
+            196679,
+            637,
+            42
+          ]
+        },
+        {
+          "position": 384,
+          "words": [
+            196679,
+            638,
+            42
+          ]
+        },
+        {
+          "position": 385,
+          "words": [
+            196679,
+            646,
+            42
+          ]
+        },
+        {
+          "position": 386,
+          "words": [
+            196679,
+            647,
+            42
+          ]
+        },
+        {
+          "position": 394,
+          "words": [
+            196679,
+            870,
+            42
+          ]
+        },
+        {
+          "position": 400,
+          "words": [
+            196679,
+            949,
+            42
+          ]
+        },
+        {
+          "position": 401,
+          "words": [
+            196679,
+            953,
+            42
+          ]
+        },
+        {
+          "position": 412,
+          "words": [
+            196679,
+            1710,
+            42
+          ]
+        },
+        {
+          "position": 413,
+          "words": [
+            196679,
+            1718,
+            42
+          ]
+        },
+        {
+          "position": 414,
+          "words": [
+            196679,
+            1734,
+            42
+          ]
+        },
+        {
+          "position": 415,
+          "words": [
+            196679,
+            1742,
+            42
+          ]
+        },
+        {
+          "position": 416,
+          "words": [
+            196679,
+            1772,
+            42
+          ]
+        },
+        {
+          "position": 417,
+          "words": [
+            196679,
+            1780,
+            42
+          ]
+        },
+        {
+          "position": 418,
+          "words": [
+            196679,
+            1796,
+            42
+          ]
+        },
+        {
+          "position": 419,
+          "words": [
+            196679,
+            1804,
+            42
+          ]
+        },
+        {
+          "position": 420,
+          "words": [
+            196679,
+            2018,
+            42
+          ]
+        },
+        {
+          "position": 421,
+          "words": [
+            196679,
+            2102,
+            42
+          ]
+        },
+        {
+          "position": 427,
+          "words": [
+            196679,
+            267,
+            42
+          ]
+        },
+        {
+          "position": 428,
+          "words": [
+            196679,
+            271,
+            42
+          ]
+        }
+      ]
+    },
+    "small-b49ee2a8ef02.spv": {
+      "source": "source/network-fp16-20261027/f21-b49ee2a8ef02/kernel.comp",
+      "defines": [],
+      "raw_sha256": "b49ee2a8ef028fefb07d2b139227d0f7fba7b99a23b2ef213615445fd288c223",
+      "sha256": "b49ee2a8ef028fefb07d2b139227d0f7fba7b99a23b2ef213615445fd288c223",
+      "precision_decorations": []
+    }
+  }
+}

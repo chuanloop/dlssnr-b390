@@ -1,0 +1,112 @@
+// T03 isolated paired DS.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_memory_scope_semantics : require
+#include "ioport_common.glsl"
+// e4m3 rounding of the downsample output.
+// `layers/swin.py` rounds whatever enters a swin block (`round8(x)`) and every stored
+// result (`store(x) = q8(_f16(x))`); this kernel's MAT_H narrowing is that f16 step on
+// the way out of the downsample projection. NR_QUANT_E4M3=0 restores f16-only.
+#ifndef NR_QUANT_E4M3
+#define NR_QUANT_E4M3 1
+#endif
+#include "e4m3.glsl"
+layout(local_size_x=32) in;
+// Existing PAIR2: one subgroup computes eight pixels and thirty-two channels.
+// Existing A cap 32 is retained; only the output scratch is removed.
+// F03: a_half deleted; pooling feeds the A fragments in registers
+// (see build proof: per-column producer ownership + CH A map need only four
+// packed XOR16 exchanges per lane; requires pc.p1.x == 32, the only value the
+// frozen plan pushes to this PASS).
+#define MAT_H coopmat<float16_t,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>
+uvec2 ds_pixel(uint u) {
+    if(pc.p2.y==0u) {
+        uint tile=u/16u,slot=u%16u,tiles_x=pc.p0.z/4u;
+        return uvec2(4u*(tile%tiles_x)+slot%4u,4u*(tile/tiles_x)+slot/4u);
+    }
+    return uvec2(u%pc.p0.z,u/pc.p0.z);
+}
+void main() {
+    uint lane=gl_LocalInvocationID.x,m0=gl_WorkGroupID.x*8u,n0=gl_WorkGroupID.y*32u;
+    // F03 register path: this lane pools its own column (k = lane) for all
+    // eight rows - exactly the parent staging assignment for K = 32 - then
+    // packs the four row pairs; four XOR16 exchanges bring the cross-parity
+    // half of each K16 slice from the partner lane.
+    precise float16_t v[8];
+    for(uint m=0u;m<8u;++m) {
+        const uint k=lane;
+        uvec2 pixel=ds_pixel(m0+m);uint px=pixel.x,py=pixel.y;
+        precise float16_t val=float16_t(0);
+        if(py<pc.p0.w&&px<pc.p3.z&&py<pc.p3.w) {
+            precise float16_t top=io_read(2u*px,2u*py,k)+io_read(2u*px+1u,2u*py,k);
+            precise float16_t bottom=io_read(2u*px,2u*py+1u,k)+io_read(2u*px+1u,2u*py+1u,k);
+            precise float16_t sum=top+bottom;
+            val=sum*float16_t(0.25);
+        }
+        v[m]=val;
+    }
+    const uint ev01=packFloat2x16(f16vec2(v[0],v[2]));
+    const uint ev23=packFloat2x16(f16vec2(v[4],v[6]));
+    const uint od01=packFloat2x16(f16vec2(v[1],v[3]));
+    const uint od23=packFloat2x16(f16vec2(v[5],v[7]));
+    const uint xev01=subgroupShuffleXor(ev01,16u);
+    const uint xev23=subgroupShuffleXor(ev23,16u);
+    const uint xod01=subgroupShuffleXor(od01,16u);
+    const uint xod23=subgroupShuffleXor(od23,16u);
+    coopmat<float,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator> acc0=
+        coopmat<float,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>(0.0);
+    coopmat<float,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator> acc1=coopmat<float,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>(0.0);
+    {
+        // low K16 slice (k = 0..15): lanes <16 own the even rows of their
+        // column; lanes >=16 take the odd rows of column lane-16 from the
+        // partner. Same slice order as the parent's k=0 iteration.
+        coopmat<float16_t,gl_ScopeSubgroup,8,16,gl_MatrixUseA> aa;
+        const f16vec2 p01=unpackFloat2x16(lane<16u?ev01:xod01);
+        const f16vec2 p23=unpackFloat2x16(lane<16u?ev23:xod23);
+        aa[0]=p01.x;aa[1]=p01.y;aa[2]=p23.x;aa[3]=p23.y;
+        coopmat<float16_t,gl_ScopeSubgroup,16,16,gl_MatrixUseB> bb;
+        coopMatLoad(bb,w,pc.p1.z+((n0/16u)*(pc.p1.x/16u)+0u)*256u,16u,gl_CooperativeMatrixLayoutColumnMajor);
+        acc0=coopMatMulAdd(aa,bb,acc0);
+        coopmat<float16_t,gl_ScopeSubgroup,16,16,gl_MatrixUseB> bb1;
+        coopMatLoad(bb1,w,pc.p1.z+(((n0+16u)/16u)*(pc.p1.x/16u)+0u)*256u,16u,gl_CooperativeMatrixLayoutColumnMajor);
+        acc1=coopMatMulAdd(aa,bb1,acc1);
+    }
+    {
+        // high K16 slice (k = 16..31): lanes >=16 own the odd rows of their
+        // column; lanes <16 take the even rows of column 16+lane from the
+        // partner. Same slice order as the parent's k=16 iteration.
+        coopmat<float16_t,gl_ScopeSubgroup,8,16,gl_MatrixUseA> aa;
+        const f16vec2 q01=unpackFloat2x16(lane<16u?xev01:od01);
+        const f16vec2 q23=unpackFloat2x16(lane<16u?xev23:od23);
+        aa[0]=q01.x;aa[1]=q01.y;aa[2]=q23.x;aa[3]=q23.y;
+        coopmat<float16_t,gl_ScopeSubgroup,16,16,gl_MatrixUseB> bb;
+        coopMatLoad(bb,w,pc.p1.z+((n0/16u)*(pc.p1.x/16u)+1u)*256u,16u,gl_CooperativeMatrixLayoutColumnMajor);
+        acc0=coopMatMulAdd(aa,bb,acc0);
+        coopmat<float16_t,gl_ScopeSubgroup,16,16,gl_MatrixUseB> bb1;
+        coopMatLoad(bb1,w,pc.p1.z+(((n0+16u)/16u)*(pc.p1.x/16u)+1u)*256u,16u,gl_CooperativeMatrixLayoutColumnMajor);
+        acc1=coopMatMulAdd(aa,bb1,acc1);
+    }
+    // Producer and consumer use identical ds_pixel ownership. Captured shapes
+    // cover only complete M8 fragments: layout0 stays in one half of a 4x4 tile;
+    // layout1 stays in a raster token16 tile, including zero-filled padding.
+    uvec2 first=ds_pixel(m0);
+    {
+        MAT_H half0=MAT_H(acc0);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<half0.length();++ci) half0[ci]=nr_e4m3_h(half0[ci]);
+#endif
+        uint dst=pc.p4.y+io_at(first.x,first.y,n0,pc.p0.z,pc.p0.w,pc.p1.y,pc.p2.y);
+        coopMatStore(half0,o,dst,16u,gl_CooperativeMatrixLayoutRowMajor);
+    }
+    {
+        MAT_H half1=MAT_H(acc1);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<half1.length();++ci) half1[ci]=nr_e4m3_h(half1[ci]);
+#endif
+        uint dst=pc.p4.y+io_at(first.x,first.y,n0+16u,pc.p0.z,pc.p0.w,pc.p1.y,pc.p2.y);
+        coopMatStore(half1,o,dst,16u,gl_CooperativeMatrixLayoutRowMajor);
+    }
+}

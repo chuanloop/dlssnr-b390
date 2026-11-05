@@ -1,0 +1,11 @@
+detail=1.0
+colour=1.0
+guard=0
+rcas=0.0
+delta=0
+intensity=1.0
+easu=1
+tone=1.0
+texture=1.0
+scale=1.0
+dump=0

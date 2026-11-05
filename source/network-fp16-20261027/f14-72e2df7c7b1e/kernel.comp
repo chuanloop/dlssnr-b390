@@ -1,0 +1,127 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+layout(local_size_x=256) in;
+#include "b3_04_vit_common.glsl"
+#include "vit_qkv_norm_owner_handoff.glsl"
+// e4m3 narrowing of the [q|k|v] store.
+// `layers/vit.py` VitQKV: the q/k norms are float16, and "the result is
+// [q | k | v] with 3 * 1024 channels, e4m3". n0 < 1024 is q, < 2048 is k, else v;
+// all three leave through the same pair of stores, so the rounding goes just
+// before them. NR_QUANT_E4M3=0 restores the unrounded behaviour.
+#ifndef NR_QUANT_E4M3
+#define NR_QUANT_E4M3 1
+#endif
+#include "e4m3.glsl"
+#define MH coopmat<float16_t,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>
+// New identity v2: the Q/K norm is executed by the subgroup that projected the
+// token, on the two half fragments that hold its 32 channels.
+//
+// Parent: the projection subgroup stored four MH fragments per token group to
+// shared pairRaw[4096] (128 tokens x 32 channels); a workgroup barrier followed;
+// then threads 0..127 each read one token's 32 shared halfs, ran the exact
+// 32-square / 31-add / rsqrt tree in scalar half, scaled, and wrote 32 halfs to
+// qkv one element at a time.
+//
+// Edge deleted (complete producer -> temporary -> consumer, same subgroup):
+//   producer lane of pairRaw[t*32+d]      = ((row%2)*16 + d)   component row/2
+//   consumer lane of the same element     = ((row%2)*16 + d)   component row/2
+// so the value never crosses a lane, let alone a subgroup. The temporary is
+// replaced by the accumulator components the lane already owns.
+//
+// v2 fix vs v1 (4dfce795..., numeric FAIL): v1 evaluated the reciprocal from
+// each lane's own tree node. The parent tree is predicated (s[d]=s[d]+s[d+step]
+// only for d<step), so only column 0 completes all four steps; the other
+// fifteen columns hold intermediate nodes. v2 evaluates the reciprocal in the
+// column-0 owner and broadcasts it from lane&16, exactly as the accepted
+// wide v3 norm owner does.
+//
+// Kept: the projection loop and its operand order, the MH narrowing point (one
+// half narrowing of the completed FP32 accumulator per side), the debug echo of
+// the raw MH fragment, the qkv write domain (t*3072 + n0 + d) and every half
+// rounding of the norm/scale tree (vq_pair_sum / vq_tree_xor / vq_scale_*).
+void main() {
+    uint sg=gl_SubgroupID,lane=gl_SubgroupInvocationID;
+    uint mA=gl_WorkGroupID.x*128u+sg*8u,mB=mA+64u,n0=gl_WorkGroupID.y*32u;
+    const uint K=1024u;
+    {
+        MC accA0=MC(0.0),accA1=MC(0.0),accB0=MC(0.0),accB1=MC(0.0);
+        for(uint k0=0u;k0<K;k0+=16u) {
+            MB b0,b1;
+            coopMatLoad(b0,w,vit_wbase(pc.p1.z,n0,k0,K),16u,CM);
+            coopMatLoad(b1,w,vit_wbase(pc.p1.z,n0+16u,k0,K),16u,CM);
+            MA af;
+            if(mA<pc.p0.x) {
+                coopMatLoad(af,y,pc.p5.w+mA*K+k0,K,RM);
+                accA0=coopMatMulAdd(af,b0,accA0);
+                accA1=coopMatMulAdd(af,b1,accA1);
+            }
+            if(mB<pc.p0.x) {
+                coopMatLoad(af,y,pc.p5.w+mB*K+k0,K,RM);
+                accB0=coopMatMulAdd(af,b0,accB0);
+                accB1=coopMatMulAdd(af,b1,accB1);
+            }
+        }
+        // Parent publication order: group 0 (mA) then group 1 (mB), and inside a
+        // group side 0 (channels n0..n0+15) then side 1 (n0+16..n0+31).
+        for(uint group=0u;group<2u;++group) {
+            uint m=group==0u?mA:mB;
+            // m is subgroup uniform. The parent's per-row t<pc.p0.x qkv guard is
+            // equivalent to this group guard because live tokens (288 in every
+            // B5 call) are a multiple of the 8 fragment rows; blocks at or past
+            // live were skipped by the same value in the parent.
+            if(m>=pc.p0.x) continue;
+            MH h0,h1;
+            if(group==0u) {
+                h0=MH(accA0);
+                h1=MH(accA1);
+            } else {
+                h0=MH(accB0);
+                h1=MH(accB1);
+            }
+            if(pc.p0.w!=0u) {
+                coopMatStore(h0,dbg,pc.p6.z+pc.p3.y+m*3072u+n0,3072u,RM);
+                coopMatStore(h1,dbg,pc.p6.z+pc.p3.y+m*3072u+n0+16u,3072u,RM);
+            }
+            if(n0<2048u) {
+                // s[d] = z[d]^2 + z[d+16]^2, then the parent's 8/4/2/1 half tree.
+                f16vec2 s01=vq_pair_sum(f16vec2(h0[0],h0[1]),f16vec2(h1[0],h1[1]));
+                f16vec2 s23=vq_pair_sum(f16vec2(h0[2],h0[3]),f16vec2(h1[2],h1[3]));
+                s01=vq_tree_xor(s01,lane);
+                s23=vq_tree_xor(s23,lane);
+                f16vec2 inv01=vq_norm_rcp(s01,lane);
+                f16vec2 inv23=vq_norm_rcp(s23,lane);
+                if(n0<1024u) {
+                    float16_t scale=float16_t(scales[pc.p2.z+(n0%1024u)/32u]);
+                    h0[0]=vq_scale_q(h0[0],inv01.x,scale);
+                    h0[1]=vq_scale_q(h0[1],inv01.y,scale);
+                    h0[2]=vq_scale_q(h0[2],inv23.x,scale);
+                    h0[3]=vq_scale_q(h0[3],inv23.y,scale);
+                    h1[0]=vq_scale_q(h1[0],inv01.x,scale);
+                    h1[1]=vq_scale_q(h1[1],inv01.y,scale);
+                    h1[2]=vq_scale_q(h1[2],inv23.x,scale);
+                    h1[3]=vq_scale_q(h1[3],inv23.y,scale);
+                } else {
+                    h0[0]=vq_scale_k(h0[0],inv01.x);
+                    h0[1]=vq_scale_k(h0[1],inv01.y);
+                    h0[2]=vq_scale_k(h0[2],inv23.x);
+                    h0[3]=vq_scale_k(h0[3],inv23.y);
+                    h1[0]=vq_scale_k(h1[0],inv01.x);
+                    h1[1]=vq_scale_k(h1[1],inv01.y);
+                    h1[2]=vq_scale_k(h1[2],inv23.x);
+                    h1[3]=vq_scale_k(h1[3],inv23.y);
+                }
+            }
+#if NR_QUANT_E4M3
+            for(uint ci=0u;ci<h0.length();++ci) h0[ci]=nr_e4m3_h(h0[ci]);
+            for(uint ci=0u;ci<h1.length();++ci) h1[ci]=nr_e4m3_h(h1[ci]);
+#endif
+            coopMatStore(h0,qkv,uint(pc.p6.x)+m*3072u+n0,3072u,RM);
+            coopMatStore(h1,qkv,uint(pc.p6.x)+m*3072u+n0+16u,3072u,RM);
+        }
+    }
+}

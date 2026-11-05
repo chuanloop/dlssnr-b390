@@ -1,0 +1,105 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+layout(local_size_x=256) in;
+#include "split16_ffwd_exec_opt_common.glsl"
+// e4m3 rounding at the three stores of the grouped feed-forward.
+// `layers/split_swin.py` SplitFfwd.forward:
+//     reduced = _store(int8.mm(tokens, expand_in))            # [8,T,64]
+//     hidden  = _store(activation(int8.mm(reduced, expand_hidden)))   # [8,T,256]
+//     out     = _store(int8.mm(hidden, contract))             # [8,T,64]
+// with `_store = q8(f16(x))`; the docstring says the same in words ("rounds them,
+// ... applies the cubic SiLU and rounds"). This kernel fuses all three stages, so
+// each site below is one of those stores. NR_QUANT_E4M3=0 restores f16-only.
+#ifndef NR_QUANT_E4M3
+#define NR_QUANT_E4M3 1
+#endif
+#include "e4m3.glsl"
+#define MH coopmat<float16_t,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>
+shared float16_t debugTile[1024];
+MA as_a(MH x) { MA a; for(int i=0;i<a.length();++i) a[i]=x[i]; return a; }
+void debug_half(MH x,uint base,uint token,uint channel,uint stride) {
+    uint sg=gl_SubgroupID,lane=gl_SubgroupInvocationID;
+    coopMatStore(x,debugTile,sg*128u,16u,ROW);
+    subgroupMemoryBarrierShared();subgroupBarrier();
+    for(uint e=lane;e<128u;e+=32u)
+        dbg[base+(token+e/16u)*stride+channel+e%16u]=float(debugTile[sg*128u+e]);
+    subgroupMemoryBarrierShared();subgroupBarrier();
+}
+void main() {
+    uint sg=gl_SubgroupID;
+    uint token=gl_WorkGroupID.x*16u+(sg%2u)*8u;
+    uint g=gl_WorkGroupID.y*4u+sg/2u;
+    uint xb=tiled(token,0u,512u);
+    uint w1=uint(pc.p2.x)+(g*4u)*8192u;
+    MC r0=MC(0.0),r1=MC(0.0),r2=MC(0.0),r3=MC(0.0);
+    for(uint k=0u;k<512u;k+=16u) {
+        MA a;coopMatLoad(a,gx,xb+(k/16u)*256u,16u,ROW);
+        MB b0,b1;
+        coopMatLoad(b0,weights,w1+(k/16u)*256u,16u,COL);
+        coopMatLoad(b1,weights,w1+8192u+(k/16u)*256u,16u,COL);
+        r0=coopMatMulAdd(a,b0,r0);r1=coopMatMulAdd(a,b1,r1);
+        coopMatLoad(b0,weights,w1+16384u+(k/16u)*256u,16u,COL);
+        coopMatLoad(b1,weights,w1+24576u+(k/16u)*256u,16u,COL);
+        r2=coopMatMulAdd(a,b0,r2);r3=coopMatMulAdd(a,b1,r3);
+    }
+    MH h0=MH(r0),h1=MH(r1),h2=MH(r2),h3=MH(r3);
+    if(pc.p5.x!=0) {
+        debug_half(h0,uint(pc.p5.y),token,g*64u,512u);
+        debug_half(h1,uint(pc.p5.y),token,g*64u+16u,512u);
+        debug_half(h2,uint(pc.p5.y),token,g*64u+32u,512u);
+        debug_half(h3,uint(pc.p5.y),token,g*64u+48u,512u);
+    }
+#if NR_QUANT_E4M3
+    for(uint ci=0u;ci<h0.length();++ci) h0[ci]=nr_e4m3_h(h0[ci]);
+    for(uint ci=0u;ci<h1.length();++ci) h1[ci]=nr_e4m3_h(h1[ci]);
+    for(uint ci=0u;ci<h2.length();++ci) h2[ci]=nr_e4m3_h(h2[ci]);
+    for(uint ci=0u;ci<h3.length();++ci) h3[ci]=nr_e4m3_h(h3[ci]);
+#endif
+    MA a0=as_a(h0),a1=as_a(h1),a2=as_a(h2),a3=as_a(h3);
+    MC o0=MC(0.0),o1=MC(0.0),o2=MC(0.0),o3=MC(0.0);
+    for(uint hidden=0u;hidden<256u;hidden+=32u) {
+        uint w2=uint(pc.p2.y)+((g*256u+hidden)/16u)*1024u;
+        MC e0=MC(0.0),e1=MC(0.0);
+#define EXPAND_STEP(A,K) { MB b0,b1; coopMatLoad(b0,weights,w2+(K)*256u,16u,COL); coopMatLoad(b1,weights,w2+1024u+(K)*256u,16u,COL); e0=coopMatMulAdd(A,b0,e0);e1=coopMatMulAdd(A,b1,e1); }
+        EXPAND_STEP(a0,0u)
+        EXPAND_STEP(a1,1u)
+        EXPAND_STEP(a2,2u)
+        EXPAND_STEP(a3,3u)
+#undef EXPAND_STEP
+        MH v0=MH(e0),v1=MH(e1);
+        if(pc.p5.x!=0) {
+            debug_half(v0,uint(pc.p5.z),token,g*256u+hidden,2048u);
+            debug_half(v1,uint(pc.p5.z),token,g*256u+hidden+16u,2048u);
+        }
+#if NR_QUANT_E4M3
+        for(int i=0;i<v0.length();++i) {v0[i]=nr_e4m3_h(activation(v0[i]));v1[i]=nr_e4m3_h(activation(v1[i]));}
+#else
+        for(int i=0;i<v0.length();++i) {v0[i]=activation(v0[i]);v1[i]=activation(v1[i]);}
+#endif
+        if(pc.p5.x!=0) {
+            debug_half(v0,uint(pc.p5.w),token,g*256u+hidden,2048u);
+            debug_half(v1,uint(pc.p5.w),token,g*256u+hidden+16u,2048u);
+        }
+        MA va=as_a(v0),vb=as_a(v1);
+        uint w3=uint(pc.p2.z)+(g*4u)*4096u+(hidden/16u)*256u;
+#define CONTRACT_STEP(A,K) { MB b0,b1; coopMatLoad(b0,weights,w3+(K)*256u,16u,COL);coopMatLoad(b1,weights,w3+4096u+(K)*256u,16u,COL);o0=coopMatMulAdd(A,b0,o0);o1=coopMatMulAdd(A,b1,o1);coopMatLoad(b0,weights,w3+8192u+(K)*256u,16u,COL);coopMatLoad(b1,weights,w3+12288u+(K)*256u,16u,COL);o2=coopMatMulAdd(A,b0,o2);o3=coopMatMulAdd(A,b1,o3); }
+        CONTRACT_STEP(va,0u)
+        CONTRACT_STEP(vb,1u)
+#undef CONTRACT_STEP
+    }
+    MH y0=MH(o0),y1=MH(o1),y2=MH(o2),y3=MH(o3);
+#if NR_QUANT_E4M3
+    for(uint ci=0u;ci<y0.length();++ci) y0[ci]=nr_e4m3_h(y0[ci]);
+    for(uint ci=0u;ci<y1.length();++ci) y1[ci]=nr_e4m3_h(y1[ci]);
+    for(uint ci=0u;ci<y2.length();++ci) y2[ci]=nr_e4m3_h(y2[ci]);
+    for(uint ci=0u;ci<y3.length();++ci) y3[ci]=nr_e4m3_h(y3[ci]);
+#endif
+    coopMatStore(y0,gf,tiled(token,g*64u,512u),16u,ROW);
+    coopMatStore(y1,gf,tiled(token,g*64u+16u,512u),16u,ROW);
+    coopMatStore(y2,gf,tiled(token,g*64u+32u,512u),16u,ROW);
+    coopMatStore(y3,gf,tiled(token,g*64u+48u,512u),16u,ROW);
+}

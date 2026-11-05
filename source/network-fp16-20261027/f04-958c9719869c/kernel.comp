@@ -1,0 +1,309 @@
+// D034-C128: one workgroup per window = hidden32 expand/act/middle (registers) ->
+// mLocal (8 KiB, [64 tokens][64 C]) -> contract, with the parent gM mirror kept.
+// Math, K order, half narrowing points and the contract seed/weight addresses are
+// the parent's; only the ownership (g = sg%2 -> M channels 32g.., pair = sg/2 ->
+// tokens 16*pair..) and the M handoff (SLM instead of a global round trip) differ.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 256) in;
+#include "nb05_swin_c128_common.glsl"
+// e4m3 rounding of a stored swin intermediate / block output.
+// `layers/swin.py`: every stored result goes through `store(x) = q8(_f16(x))`, and
+// `swin_block` returns `q8(wide)` for the layer's output. The three fused stages of
+// a swin block write exactly one of these buffers each -- f04 the MLP/attention
+// intermediate (Y), f05 the per-window tensor (T), f02/f06 the block output -- so the
+// rounding goes on the narrowed value just before its store.
+// NR_QUANT_E4M3=0 restores f16-only.
+#ifndef NR_QUANT_E4M3
+#define NR_QUANT_E4M3 1
+#endif
+#include "e4m3.glsl"
+// `_activate` = q8(activation(expand)) on the float32 accumulator (swin.py:189).
+// Rounding after the narrow to f16 instead adds a rounding the reference does not
+// have; measured on f01 that costs dA 0.0090 -> 0.0127 at block 0.
+#if NR_QUANT_E4M3
+#define NR_ACT_Q(v) nr_e4m3_f32(c128_act_f(v))
+#else
+#define NR_ACT_Q(v) c128_act_f(v)
+#endif
+
+
+layout(set = 0, binding = 5) buffer MBuf { float16_t gM[]; };
+layout(set = 0, binding = 6) buffer YBuf { float16_t gY[]; };
+
+shared float16_t mLocal[4096];   // [32 slab tokens][128 C]
+
+#define MAT_H coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>
+
+// CH -> A: per-lane component copy.  Same 8x16 half isomorphism the D02 own-V
+// candidate proved bit-exact against the frozen parent (four_coop_mat components).
+MAT_A c64_ch_to_a(MAT_H x) {
+    MAT_A o = MAT_A(float16_t(0.0));
+    o[0] = x[0];
+    o[1] = x[1];
+    o[2] = x[2];
+    o[3] = x[3];
+    return o;
+}
+
+void main() {
+    const uint t_local = gl_LocalInvocationID.x;
+    const uint sg = gl_SubgroupID;
+    const uint lane = gl_SubgroupInvocationID;
+    const uint wx = (pc.p1.z != 0) ? uint(pc.p2.x) : gl_WorkGroupID.x;
+    const uint wy = (pc.p1.z != 0) ? uint(pc.p2.y) : gl_WorkGroupID.y;
+    const uint w = wy * uint(pc.p1.x) + wx;
+    const bool debug = pc.p1.w != 0;
+    const uint we = uint(pc.p3.x);
+    const uint wm = uint(pc.p3.y);
+    const uint wc = uint(pc.p3.z);
+    const uint rs = uint(pc.p4.y);
+
+    const uint g = sg % 4u;          // M channels 32g .. 32g+31
+    const uint pair = sg / 4u;       // slab pair 0..1 -> slab tokens 16*pair ..
+    const uint t0 = gl_WorkGroupID.z * 32u;   // slab start in window tokens
+    const uint slA = 16u * pair;              // slab-local first row
+    const uint slB = slA + 8u;
+    const uint tA = t0 + slA;                 // window token
+    const uint tB = t0 + slB;
+    const uint cg0 = 32u * g;
+    const uint cg1 = cg0 + 16u;
+
+    // ---- hidden32 stream: expand -> act -> middle, four middle accumulators ----
+    MAT_C mcA0 = MAT_C(float16_t(0.0));
+    MAT_C mcA1 = MAT_C(float16_t(0.0));
+    MAT_C mcB0 = MAT_C(float16_t(0.0));
+    MAT_C mcB1 = MAT_C(float16_t(0.0));
+
+    bool oobA, oobB;
+    const uint xA = c128_img_half_index(tA, 0u, wx, wy, oobA);
+    const uint xB = c128_img_half_index(tB, 0u, wx, wy, oobB);
+
+    for (uint hb = 0u; hb < 4u; ++hb) {
+        const uint h0 = hb * 32u;
+        MAT_C e00 = MAT_C(float16_t(0.0));
+        MAT_C e01 = MAT_C(float16_t(0.0));
+        MAT_C e10 = MAT_C(float16_t(0.0));
+        MAT_C e11 = MAT_C(float16_t(0.0));
+        for (uint ki = 0u; ki < 8u; ++ki) {
+            const uint k0 = ki * 16u;
+            MAT_B wh0;
+            coopMatLoad(wh0, pack, we + ((128u * g + h0) / 16u) * 2048u + ki * 256u, 16u, LCOL);
+            MAT_B wh1;
+            coopMatLoad(wh1, pack, we + ((128u * g + h0 + 16u) / 16u) * 2048u + ki * 256u, 16u, LCOL);
+            MAT_A xa = MAT_A(float16_t(0.0));
+            if (!oobA) coopMatLoad(xa, imgin, xA + ki * 256u, 16u, LROW);
+            for (uint ci = 0u; ci < xa.length(); ++ci) xa[ci] = nr_e4m3_h(xa[ci]);
+            MAT_A xb = MAT_A(float16_t(0.0));
+            if (!oobB) coopMatLoad(xb, imgin, xB + ki * 256u, 16u, LROW);
+            for (uint ci = 0u; ci < xb.length(); ++ci) xb[ci] = nr_e4m3_h(xb[ci]);
+            e00 = coopMatMulAdd(xa, wh0, e00);
+            e01 = coopMatMulAdd(xa, wh1, e01);
+            e10 = coopMatMulAdd(xb, wh0, e10);
+            e11 = coopMatMulAdd(xb, wh1, e11);
+        }
+        // act on the completed FP32 accumulator, then narrow (parent's order).
+        MAT_C n00 = e00;
+        MAT_C n01 = e01;
+        MAT_C n10 = e10;
+        MAT_C n11 = e11;
+        for (int ci = 0; ci < n00.length(); ++ci) {
+            n00[ci] = NR_ACT_Q(n00[ci]);
+            n01[ci] = NR_ACT_Q(n01[ci]);
+            n10[ci] = NR_ACT_Q(n10[ci]);
+            n11[ci] = NR_ACT_Q(n11[ci]);
+        }
+        // narrow once, here -- downstream (CH -> A, the debug dump) is unchanged
+        MAT_H h00 = MAT_H(n00);
+        MAT_H h01 = MAT_H(n01);
+        MAT_H h10 = MAT_H(n10);
+        MAT_H h11 = MAT_H(n11);
+        if (debug) {
+            coopMatStore(h00, dbg, 20480u + (tA) * 256u + 128u * g + h0 + 0u, 256u, LROW);
+            coopMatStore(h01, dbg, 20480u + (tA) * 256u + 128u * g + h0 + 16u, 256u, LROW);
+            coopMatStore(h10, dbg, 20480u + (tB) * 256u + 128u * g + h0 + 0u, 256u, LROW);
+            coopMatStore(h11, dbg, 20480u + (tB) * 256u + 128u * g + h0 + 16u, 256u, LROW);
+        }
+        // middle: A = the activated hidden CH, B = Wm[channel][hidden], stride 128.
+        MAT_A a00 = c64_ch_to_a(h00);
+        MAT_A a01 = c64_ch_to_a(h01);
+        MAT_A a10 = c64_ch_to_a(h10);
+        MAT_A a11 = c64_ch_to_a(h11);
+        {
+            MAT_B mb0;
+            coopMatLoad(mb0, pack, wm + cg0 * 128u + h0, 128u, LCOL);
+            MAT_B mb1;
+            coopMatLoad(mb1, pack, wm + cg1 * 128u + h0, 128u, LCOL);
+            mcA0 = coopMatMulAdd(a00, mb0, mcA0);
+            mcA1 = coopMatMulAdd(a00, mb1, mcA1);
+            mcB0 = coopMatMulAdd(a10, mb0, mcB0);
+            mcB1 = coopMatMulAdd(a10, mb1, mcB1);
+        }
+        {
+            MAT_B mb0;
+            coopMatLoad(mb0, pack, wm + cg0 * 128u + h0 + 16u, 128u, LCOL);
+            MAT_B mb1;
+            coopMatLoad(mb1, pack, wm + cg1 * 128u + h0 + 16u, 128u, LCOL);
+            mcA0 = coopMatMulAdd(a01, mb0, mcA0);
+            mcA1 = coopMatMulAdd(a01, mb1, mcA1);
+            mcB0 = coopMatMulAdd(a11, mb0, mcB0);
+            mcB1 = coopMatMulAdd(a11, mb1, mcB1);
+        }
+    }
+
+    // ---- M publication: slab-local mLocal + the parent's canonical gM mirror ----
+    {
+        MAT_H v = MAT_H(mcA0);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<v.length();++ci) v[ci]=nr_e4m3_h(v[ci]);
+#endif
+        coopMatStore(v, mLocal, slA * 128u + cg0, 128u, LROW);
+        if (debug) coopMatStore(v, dbg, 36864u + tA * 128u + cg0, 128u, LROW);
+    }
+    {
+        MAT_H v = MAT_H(mcA1);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<v.length();++ci) v[ci]=nr_e4m3_h(v[ci]);
+#endif
+        coopMatStore(v, mLocal, slA * 128u + cg1, 128u, LROW);
+        if (debug) coopMatStore(v, dbg, 36864u + tA * 64u + cg1, 128u, LROW);
+    }
+    {
+        MAT_H v = MAT_H(mcB0);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<v.length();++ci) v[ci]=nr_e4m3_h(v[ci]);
+#endif
+        coopMatStore(v, mLocal, slB * 128u + cg0, 128u, LROW);
+        if (debug) coopMatStore(v, dbg, 36864u + tB * 64u + cg0, 128u, LROW);
+    }
+    {
+        MAT_H v = MAT_H(mcB1);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<v.length();++ci) v[ci]=nr_e4m3_h(v[ci]);
+#endif
+        coopMatStore(v, mLocal, slB * 128u + cg1, 128u, LROW);
+        if (debug) coopMatStore(v, dbg, 36864u + tB * 64u + cg1, 128u, LROW);
+    }
+    barrier();   // full M published (parent K13:109 equivalent)
+
+    // ---- contract: seed = imgin(mA,n0)*pack[rs+n], A = mLocal, B = WC ----
+    MAT_C accA0;
+    {
+        bool oob;
+        uint addr = c128_img_half_index(tA, cg0, wx, wy, oob);
+        MAT_H seed;
+        if (oob) seed = MAT_H(float16_t(0.0));
+        else coopMatLoad(seed, imgin, addr, 16u, LROW);
+        // `layers/swin.py` `swin_block` reads `round8(x)`: the residual (`residual * mlp_scale`)
+        // and the A operand are the *rounded* input, not the raw f16 arena. T49 measured that
+        // block9 sat 0.061 away from the reference and that 0.047 is what is left once the
+        // reference takes its residual from f16 -- i.e. this rounding is the difference.
+        for (uint ci = 0u; ci < seed.length(); ++ci) seed[ci] = nr_e4m3_h(seed[ci]);
+        MAT_H scale;
+        coopMatLoad(scale, pack, rs + cg0, 0u, LROW);
+        seed = seed * scale;
+        accA0 = MAT_C(seed);
+    }
+    MAT_C accA1;
+    {
+        bool oob;
+        uint addr = c128_img_half_index(tA, cg1, wx, wy, oob);
+        MAT_H seed;
+        if (oob) seed = MAT_H(float16_t(0.0));
+        else coopMatLoad(seed, imgin, addr, 16u, LROW);
+        // `layers/swin.py` `swin_block` reads `round8(x)`: the residual (`residual * mlp_scale`)
+        // and the A operand are the *rounded* input, not the raw f16 arena. T49 measured that
+        // block9 sat 0.061 away from the reference and that 0.047 is what is left once the
+        // reference takes its residual from f16 -- i.e. this rounding is the difference.
+        for (uint ci = 0u; ci < seed.length(); ++ci) seed[ci] = nr_e4m3_h(seed[ci]);
+        MAT_H scale;
+        coopMatLoad(scale, pack, rs + cg1, 0u, LROW);
+        seed = seed * scale;
+        accA1 = MAT_C(seed);
+    }
+    MAT_C accB0;
+    {
+        bool oob;
+        uint addr = c128_img_half_index(tB, cg0, wx, wy, oob);
+        MAT_H seed;
+        if (oob) seed = MAT_H(float16_t(0.0));
+        else coopMatLoad(seed, imgin, addr, 16u, LROW);
+        // `layers/swin.py` `swin_block` reads `round8(x)`: the residual (`residual * mlp_scale`)
+        // and the A operand are the *rounded* input, not the raw f16 arena. T49 measured that
+        // block9 sat 0.061 away from the reference and that 0.047 is what is left once the
+        // reference takes its residual from f16 -- i.e. this rounding is the difference.
+        for (uint ci = 0u; ci < seed.length(); ++ci) seed[ci] = nr_e4m3_h(seed[ci]);
+        MAT_H scale;
+        coopMatLoad(scale, pack, rs + cg0, 0u, LROW);
+        seed = seed * scale;
+        accB0 = MAT_C(seed);
+    }
+    MAT_C accB1;
+    {
+        bool oob;
+        uint addr = c128_img_half_index(tB, cg1, wx, wy, oob);
+        MAT_H seed;
+        if (oob) seed = MAT_H(float16_t(0.0));
+        else coopMatLoad(seed, imgin, addr, 16u, LROW);
+        // `layers/swin.py` `swin_block` reads `round8(x)`: the residual (`residual * mlp_scale`)
+        // and the A operand are the *rounded* input, not the raw f16 arena. T49 measured that
+        // block9 sat 0.061 away from the reference and that 0.047 is what is left once the
+        // reference takes its residual from f16 -- i.e. this rounding is the difference.
+        for (uint ci = 0u; ci < seed.length(); ++ci) seed[ci] = nr_e4m3_h(seed[ci]);
+        MAT_H scale;
+        coopMatLoad(scale, pack, rs + cg1, 0u, LROW);
+        seed = seed * scale;
+        accB1 = MAT_C(seed);
+    }
+    for (uint ki = 0u; ki < 8u; ++ki) {
+        MAT_A aA;
+        coopMatLoad(aA, mLocal, slA * 128u + ki * 16u, 128u, LROW);
+        MAT_A aB;
+        coopMatLoad(aB, mLocal, slB * 128u + ki * 16u, 128u, LROW);
+        MAT_B b0;
+        coopMatLoad(b0, pack, wc + (cg0 / 16u) * 2048u + ki * 256u, 16u, LCOL);
+        MAT_B b1;
+        coopMatLoad(b1, pack, wc + (cg1 / 16u) * 2048u + ki * 256u, 16u, LCOL);
+        accA0 = coopMatMulAdd(aA, b0, accA0);
+        accA1 = coopMatMulAdd(aA, b1, accA1);
+        accB0 = coopMatMulAdd(aB, b0, accB0);
+        accB1 = coopMatMulAdd(aB, b1, accB1);
+    }
+    {
+        MAT_H v = MAT_H(accA0);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<v.length();++ci) v[ci]=nr_e4m3_h(v[ci]);
+#endif
+        coopMatStore(v, gY, (w * 64u + tA) * 128u + cg0, 128u, LROW);
+        if (debug) coopMatStore(v, dbg, 40960u + tA * 128u + cg0, 128u, LROW);
+    }
+    {
+        MAT_H v = MAT_H(accA1);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<v.length();++ci) v[ci]=nr_e4m3_h(v[ci]);
+#endif
+        coopMatStore(v, gY, (w * 64u + tA) * 128u + cg1, 128u, LROW);
+        if (debug) coopMatStore(v, dbg, 40960u + tA * 128u + cg1, 128u, LROW);
+    }
+    {
+        MAT_H v = MAT_H(accB0);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<v.length();++ci) v[ci]=nr_e4m3_h(v[ci]);
+#endif
+        coopMatStore(v, gY, (w * 64u + tB) * 128u + cg0, 128u, LROW);
+        if (debug) coopMatStore(v, dbg, 40960u + tB * 128u + cg0, 128u, LROW);
+    }
+    {
+        MAT_H v = MAT_H(accB1);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<v.length();++ci) v[ci]=nr_e4m3_h(v[ci]);
+#endif
+        coopMatStore(v, gY, (w * 64u + tB) * 128u + cg1, 128u, LROW);
+        if (debug) coopMatStore(v, dbg, 40960u + tB * 128u + cg1, 128u, LROW);
+    }
+}

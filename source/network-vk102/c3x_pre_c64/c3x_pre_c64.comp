@@ -1,0 +1,99 @@
+// c3x_pre_c64.comp — R07 dispatch A (C64): one full-N projection per tile plus
+// the four-corner blend, published to global memory for the body dispatch.
+//
+// T3d C64 direction B (T3b's C128 result applied to this width): the blended
+// activation is published ONCE, in the canonical io_at layout 0 over the
+// 336x192 image (binding 10, resource 248).  The tiled per-workgroup
+// staging (binding 12, resource 484, xbase + t3*64 + c) is no longer
+// written: its only consumer, the body's expand A load, now reads this
+// canonical copy with row stride 16 halves.  Out-of-bounds tiles are not
+// written here; the body skips those tokens with its own oob guard and the
+// contract zeroes them.
+//
+// Replaces the per-head (z) repetition of the same projection and the same
+// blend: in the fused kernel every z slice rebuilt the identical 16-row ×
+// 64-channel projection and re-ran the identical blend loop, publishing to
+// blout under a z==0 guard.  Here there is one WG per tile, so the publication
+// has a single owner by construction and no guard is needed.
+//
+// Grid 42×24×1 (z = 1).  Shared: the 16×64 half projection = 2,048 B.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 256) in;
+#include "nb05_swin_c64_common.glsl"
+
+layout(set = 0, binding = 8) buffer Nr3Pack { float16_t pw[]; };
+layout(set = 0, binding = 9) buffer Nr3Skip { float16_t sk[]; };
+layout(set = 0, binding = 10) buffer Nr3BlendOut { float16_t blout[]; };
+layout(set = 0, binding = 11) buffer Nr3ProjIn { float16_t x65[]; };
+// Retained descriptor only: the plan keeps 13 bindings and resource 484
+// is still allocated for this pass, but direction B leaves this tiled
+// staging unwritten (and therefore unread: the body's binding-12
+// reference is gone as well).
+layout(set = 0, binding = 12) buffer C3X { float16_t xg[]; };
+
+shared float16_t nr3_proj[1024u];
+
+#define MAT_H coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>
+
+// ioport_common.glsl io_at, layout 0 (spatial 4x4 tiles, 16 channels).
+uint nr3_io_at0(uint px, uint py, uint c, uint W, uint C) {
+    uint t = ((py / 4u) * (W / 4u) + px / 4u) * 16u + 4u * (py % 4u) + px % 4u;
+    return ((t / 16u) * (C / 16u) + c / 16u) * 256u + (t % 16u) * 16u + c % 16u;
+}
+
+void main() {
+    const uint tid = gl_LocalInvocationID.x;
+    const uint sg = tid / 32u;
+    const uint wx = (pc.p1.z != 0) ? uint(pc.p2.x) : gl_WorkGroupID.x;
+    const uint wy = (pc.p1.z != 0) ? uint(pc.p2.y) : gl_WorkGroupID.y;
+
+    // ---- projection: byte-identical math to the fused kernel, once per tile ----
+    if (sg < 4u) {
+        const uint rh = sg >> 1u, cg = sg & 1u;
+        const uint tile = wy * uint(pc.p1.x) + wx;
+        const uint abase = pc.p4.x + tile * (pc.p5.x / 16u) * 256u + rh * 128u;
+        const uint wbase = pc.p4.y + (cg * 32u / 16u) * (pc.p5.x / 16u) * 256u;
+        MAT_C acc0 = MAT_C(0.0), acc1 = MAT_C(0.0);
+        for (uint kc = 0u; kc < pc.p5.x; kc += 16u) {
+            MAT_A a; MAT_B b0, b1;
+            coopMatLoad(a, x65, abase + (kc / 16u) * 256u, 16u, LROW);
+            coopMatLoad(b0, pw, wbase + (kc / 16u) * 256u, 16u, LCOL);
+            coopMatLoad(b1, pw, wbase + (pc.p5.x / 16u) * 256u + (kc / 16u) * 256u, 16u, LCOL);
+            acc0 = coopMatMulAdd(a, b0, acc0);
+            acc1 = coopMatMulAdd(a, b1, acc1);
+        }
+        { MAT_H h = MAT_H(acc0); coopMatStore(h, nr3_proj, rh * 8u * 64u + cg * 32u, 64u, LROW); }
+        { MAT_H h = MAT_H(acc1); coopMatStore(h, nr3_proj, rh * 8u * 64u + cg * 32u + 16u, 64u, LROW); }
+    }
+    barrier();
+
+    // ---- blend: one value per token/channel, published once (canonical only) ----
+    for (uint i = tid; i < 2048u; i += 256u) {
+        const uint t3 = i / 32u, cp3 = i % 32u, c3 = cp3 * 2u;
+        const uint tg3 = t3, q3 = tg3 >> 4u, s3 = tg3 & 15u;
+        const int tx3 = 2 * int(wx) + pc.p0.z + int(q3 & 1u);
+        const int ty3 = 2 * int(wy) + pc.p0.w + int(q3 >> 1u);
+        const bool oob3 = (tx3 < 0 || ty3 < 0 || tx3 >= int(pc.p0.x) || ty3 >= int(pc.p0.y));
+        if (oob3) continue;   // canonical copy holds no out-of-bounds tiles
+        const uint px3 = uint(4 * tx3 + int(s3 % 4u)), py3 = uint(4 * ty3 + int(s3 / 4u));
+        const uint cx3 = px3 >> 1u, cy3 = py3 >> 1u;
+        const uint ps3 = (cy3 - 4u * wy) * 4u + (cx3 - 4u * wx);
+        precise f16vec2 main_scaled = f16vec2(nr3_proj[ps3 * 64u + c3], nr3_proj[ps3 * 64u + c3 + 1u]);
+        if (pc.p5.w == 1u) main_scaled = main_scaled * f16vec2(pw[pc.p5.z + pc.p5.y + c3], pw[pc.p5.z + pc.p5.y + c3 + 1u]);
+        const f16vec2 skip_gain = f16vec2(pw[pc.p5.z + c3], pw[pc.p5.z + c3 + 1u]);
+        const uint sa3 = pc.p4.z + nr3_io_at0(px3, py3, c3, pc.p6.x, pc.p5.y);
+        const f16vec2 skip_input = f16vec2(sk[sa3], sk[sa3 + 1u]);
+        precise f16vec2 skip_v = skip_input * skip_gain;
+        precise f16vec2 value = main_scaled + skip_v;
+        // The canonical store is the parent's statement, byte for byte: the
+        // contract seed reader's input is unchanged.
+        const uint ba3 = nr3_io_at0(px3, py3, c3, pc.p0.x * 4u, pc.p5.y);
+        blout[ba3] = value.x; blout[ba3 + 1u] = value.y;
+    }
+}

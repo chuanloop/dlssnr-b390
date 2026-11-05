@@ -1,0 +1,334 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+layout(local_size_x=256) in;
+#include "split16_common.glsl"
+#ifndef ROW_OWNER
+#define ROW_OWNER 1
+#endif
+// Y's final QKV read retires before score writes P into the same phase.
+shared float16_t phase[4096],qkv[6144];
+#define sy phase
+#define sp phase
+#if !ROW_OWNER
+shared float16_t sn[256]; // Only the ticket's A_ONLY attribution path.
+#endif
+// PV uses the retired Q prefix as its standard half bridge; P stays live.
+// Q[0..1024) is dead after the score WG barrier, V remains at [4096..6144).
+uint v_raw(uint e) { return e<4096u ? e : 4096u+((e-4096u)%32u)*64u+(e-4096u)/32u; }
+uint wq_tile(uint r,uint k) { return uint(pc.p3.y)+((r/16u)*32u+k/16u)*256u; }
+#define QBUF qkv
+#define KBUF qkv
+#define VBUF qkv
+#define QBASE 0u
+#define KBASE 2048u
+#define VBASE 4096u
+#define Q(E) qkv[QBASE+(E)]
+#define K(E) qkv[KBASE+(E)]
+#define CH coopmat<float16_t,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>
+
+// Two token fragments x three N16 fragments; same-use half conversion only.
+#define STORE_QKV(M,N,ACC) { \
+    CH value=CH(ACC); \
+    uint column=(N); \
+    if(column<64u) coopMatStore(value,qkv,(column/32u)*2048u+(M)*32u+column%32u,32u,ROW); \
+    else coopMatStore(value,qkv,4096u+(column-64u)*64u+(M),64u,COL); \
+}
+
+// Same Scope/Use/shape fixes component correspondence without a lane map.
+// One bias MC and one half temporary live only for the current side.
+#define SCORE_SIDE(ACC,SIDE) { \
+    uint pos=m0*64u+n0+16u*(SIDE); \
+    if(pc.p5.x!=0) coopMatStore(ACC,dbg,ldbg(0u,w,h,pos),64u,ROW); \
+    { \
+        MC bias; \
+        coopMatLoad(bias,aux,uint(pc.p4.x)+h*4096u+pos,64u,ROW); \
+        for(uint c=0u;c<ACC.length();c++) { \
+            precise float biased=ACC[c]+bias[c]; \
+            ACC[c]=biased; \
+        } \
+    } \
+    CH narrowed=CH(ACC); \
+    if(pc.p5.x!=0) { \
+        coopMatStore(narrowed,sp,pos,64u,ROW); \
+        subgroupMemoryBarrierShared();subgroupBarrier(); \
+        for(uint e=lane;e<128u;e+=32u) { \
+            uint address=pos+e/16u*64u+e%16u; \
+            dbg[ldbg(1u,w,h,address)]=float(sp[address]); \
+        } \
+        subgroupMemoryBarrierShared();subgroupBarrier(); \
+    } \
+    for(uint c=0u;c<narrowed.length();c++) narrowed[c]=exponential(narrowed[c]); \
+    coopMatStore(narrowed,sp,pos,64u,ROW); \
+    if(pc.p5.x!=0) { \
+        subgroupMemoryBarrierShared();subgroupBarrier(); \
+        for(uint e=lane;e<128u;e+=32u) { \
+            uint address=pos+e/16u*64u+e%16u; \
+            dbg[ldbg(2u,w,h,address)]=float(sp[address]); \
+        } \
+    } \
+}
+
+void main() {
+    uint lid=gl_LocalInvocationID.x,sg=lid/32u,lane=lid%32u;
+    uint wx=gl_WorkGroupID.x,wy=gl_WorkGroupID.y,h=gl_WorkGroupID.z;
+    uint w=wy*uint(pc.p1.x)+wx;
+    // B580 adaptation: SG=(token pair,N48 half), 8 SG cover 64x96 exactly.
+    // Every B fragment feeds two M8 products; K order and six accumulators stay fixed.
+    {
+        uint mA=(sg/2u)*16u,mB=mA+8u,n0=(sg%2u)*48u;
+        MC acc00=MC(0.0);
+        MC acc01=MC(0.0);
+        MC acc02=MC(0.0);
+        MC acc10=MC(0.0);
+        MC acc11=MC(0.0);
+        MC acc12=MC(0.0);
+        for(uint kc=0u;kc<512u;kc+=64u) {
+            // C2 v5 staging address hoist (T1 s22-stage-addr-hoist-v1):
+            // the 16 elements of a thread are e=lid+256*i, i.e. tokens
+            // t=q+4i with q=lid/64.  window_token(t) only sees the four
+            // (tx,ty) combinations below and tiled() advances by exactly
+            // 64*(i%4) inside a group and 256*i for the shared element, so
+            // four bases per kc slice reproduce all sixteen parent addresses.
+            // Same sixteen coalesced 2-byte residual loads, same sixteen
+            // shared stores, same zero padding, same following barrier.
+            {
+                uint q=lid>>6u,c0=lid&63u;
+                int tx=2*int(wx)+pc.p1.z,ty=2*int(wy)+pc.p1.w;
+                int w4=pc.p0.x/4,h4=pc.p0.y/4;
+                bool v00=all(bvec4(tx>=0,ty>=0,tx<w4,ty<h4));
+                bool v10=all(bvec4(tx+1>=0,ty>=0,tx+1<w4,ty<h4));
+                bool v01=all(bvec4(tx>=0,ty+1>=0,tx<w4,ty+1<h4));
+                bool v11=all(bvec4(tx+1>=0,ty+1>=0,tx+1<w4,ty+1<h4));
+                uint a00=v00?tiled(uint((ty*w4+tx)*16)+q,kc+c0,512u):0u;
+                uint a10=v10?tiled(uint((ty*w4+tx+1)*16)+q,kc+c0,512u):0u;
+                uint a01=v01?tiled(uint(((ty+1)*w4+tx)*16)+q,kc+c0,512u):0u;
+                uint a11=v11?tiled(uint(((ty+1)*w4+tx+1)*16)+q,kc+c0,512u):0u;
+#define STAGE(A,V,O) sy[lid+(O)]=(V)?gy[(A)]:float16_t(0.0)
+                STAGE(a00,v00,0u);      STAGE(a00+64u,v00,256u);
+                STAGE(a00+128u,v00,512u);STAGE(a00+192u,v00,768u);
+                STAGE(a10,v10,1024u);   STAGE(a10+64u,v10,1280u);
+                STAGE(a10+128u,v10,1536u);STAGE(a10+192u,v10,1792u);
+                STAGE(a01,v01,2048u);   STAGE(a01+64u,v01,2304u);
+                STAGE(a01+128u,v01,2560u);STAGE(a01+192u,v01,2816u);
+                STAGE(a11,v11,3072u);   STAGE(a11+64u,v11,3328u);
+                STAGE(a11+128u,v11,3584u);STAGE(a11+192u,v11,3840u);
+#undef STAGE
+            }
+            barrier();
+            for(uint k=0u;k<64u;k+=16u) {
+                MA a0,a1;
+                coopMatLoad(a0,sy,mA*64u+k,64u,ROW);
+                coopMatLoad(a1,sy,mB*64u+k,64u,ROW);
+                {
+                    MB b;
+                    coopMatLoad(b,weights,wq_tile(h*96u+n0+0u,kc+k),16u,COL);
+                    acc00=coopMatMulAdd(a0,b,acc00);
+                    acc10=coopMatMulAdd(a1,b,acc10);
+                }
+                {
+                    MB b;
+                    coopMatLoad(b,weights,wq_tile(h*96u+n0+16u,kc+k),16u,COL);
+                    acc01=coopMatMulAdd(a0,b,acc01);
+                    acc11=coopMatMulAdd(a1,b,acc11);
+                }
+                {
+                    MB b;
+                    coopMatLoad(b,weights,wq_tile(h*96u+n0+32u,kc+k),16u,COL);
+                    acc02=coopMatMulAdd(a0,b,acc02);
+                    acc12=coopMatMulAdd(a1,b,acc12);
+                }
+            }
+            barrier();
+        }
+        STORE_QKV(mA,n0+0u,acc00)
+        STORE_QKV(mA,n0+16u,acc01)
+        STORE_QKV(mA,n0+32u,acc02)
+        STORE_QKV(mB,n0+0u,acc10)
+        STORE_QKV(mB,n0+16u,acc11)
+        STORE_QKV(mB,n0+32u,acc12)
+    }
+    barrier();
+    if(pc.p5.x!=0) {
+        for(uint e=lid;e<6144u;e+=256u)
+            dbg[qdbg(e/2048u,w,h,e%2048u)]=float(qkv[v_raw(e)]);
+        // All raw debug readers finish before row owners overwrite Q/K.
+        barrier();
+    }
+#if ROW_OWNER
+    {
+        float16_t scale=float16_t(aux[uint(pc.p4.y)+h]);
+        if(lid<64u) {
+            float16_t qr[32],kr[32];
+            for(uint c=0u;c<32u;c++) {qr[c]=Q(lid*32u+c);kr[c]=K(lid*32u+c);}
+            float16_t nq=float16_t(inversesqrt(max(norm32(qr),float(float16_t(0.000062)))));
+            float16_t nk=float16_t(inversesqrt(max(norm32(kr),float(float16_t(0.000062)))));
+            for(uint c=0u;c<32u;c++) {
+                uint e=lid*32u+c;
+                precise float16_t qn=qr[c]*nq;
+                precise float16_t qs=qn*scale;
+                precise float16_t kn=kr[c]*nk;
+                Q(e)=qs;K(e)=kn;
+                if(pc.p5.x!=0) {dbg[qdbg(3u,w,h,e)]=float(qs);dbg[qdbg(4u,w,h,e)]=float(kn);}
+            }
+        }
+    }
+#else
+    if(lid<64u) {
+        float16_t qr[32],kr[32];
+        for(uint c=0u;c<32u;c++) {qr[c]=Q(lid*32u+c);kr[c]=K(lid*32u+c);}
+        sn[lid]=float16_t(inversesqrt(max(norm32(qr),float(float16_t(0.000062)))));
+        sn[64u+lid]=float16_t(inversesqrt(max(norm32(kr),float(float16_t(0.000062)))));
+    }
+    barrier();
+    float16_t scale=float16_t(aux[uint(pc.p4.y)+h]);
+    for(uint e=lid;e<2048u;e+=256u) {
+        precise float16_t qn=Q(e)*sn[e/32u];
+        precise float16_t qs=qn*scale;
+        precise float16_t kn=K(e)*sn[64u+e/32u];
+        Q(e)=qs;K(e)=kn;
+        if(pc.p5.x!=0) {dbg[qdbg(3u,w,h,e)]=float(qs);dbg[qdbg(4u,w,h,e)]=float(kn);}
+    }
+#endif
+    barrier();
+    for(uint j=0u;j<2u;j++) {
+        uint m0=(sg/2u+4u*j)*8u,n0=sg%2u*32u;
+        MC acc0=MC(0.0),acc1=MC(0.0);
+        for(uint k=0u;k<32u;k+=16u) {
+            MA a;MB b0,b1;
+            coopMatLoad(a,QBUF,QBASE+m0*32u+k,32u,ROW);
+            coopMatLoad(b0,KBUF,KBASE+n0*32u+k,32u,COL);
+            coopMatLoad(b1,KBUF,KBASE+(n0+16u)*32u+k,32u,COL);
+            acc0=coopMatMulAdd(a,b0,acc0);acc1=coopMatMulAdd(a,b1,acc1);
+        }
+        // SCORE_SIDE expanded by hand (macro definition above kept
+        // verbatim): C2 v4 layout0 body + C5 M05 paired exp.
+ {
+    uint pos=m0*64u+n0+16u*(0u);
+    if(pc.p5.x!=0) coopMatStore(acc0,dbg,ldbg(0u,w,h,pos),64u,ROW);
+    {
+        MC bias;
+        coopMatLoad(bias,aux,uint(pc.p4.x)+h*4096u+pos,64u,ROW);
+        for(uint c=0u;c<acc0.length();c++) {
+            precise float biased=acc0[c]+bias[c];
+            acc0[c]=biased;
+        }
+    }
+    CH narrowed=CH(acc0);
+    if(pc.p5.x!=0) {
+        coopMatStore(narrowed,sp,pos,64u,ROW);
+        subgroupMemoryBarrierShared();subgroupBarrier();
+        for(uint e=lane;e<128u;e+=32u) {
+            uint address=pos+e/16u*64u+e%16u;
+            dbg[ldbg(1u,w,h,address)]=float(sp[address]);
+        }
+        subgroupMemoryBarrierShared();subgroupBarrier();
+    }
+    // M05 paired exp (C5 split16-attention-m05-expair-v1): bit-identical
+    // to the scalar exponential loop (10-bit mantissa, no lane cross-talk);
+    // applied at the expanded code position, macro definition untouched.
+    {f16vec2 e01=exponential2(f16vec2(narrowed[0],narrowed[1]));narrowed[0]=e01.x;narrowed[1]=e01.y;
+     f16vec2 e23=exponential2(f16vec2(narrowed[2],narrowed[3]));narrowed[2]=e23.x;narrowed[3]=e23.y;}
+    coopMatStore(narrowed,sp,pos,64u,ROW);
+    if(pc.p5.x!=0) {
+        subgroupMemoryBarrierShared();subgroupBarrier();
+        for(uint e=lane;e<128u;e+=32u) {
+            uint address=pos+e/16u*64u+e%16u;
+            dbg[ldbg(2u,w,h,address)]=float(sp[address]);
+        }
+    }
+}
+        // SCORE_SIDE expanded by hand (macro definition above kept
+        // verbatim): C2 v4 layout0 body + C5 M05 paired exp.
+ {
+    uint pos=m0*64u+n0+16u*(1u);
+    if(pc.p5.x!=0) coopMatStore(acc1,dbg,ldbg(0u,w,h,pos),64u,ROW);
+    {
+        MC bias;
+        coopMatLoad(bias,aux,uint(pc.p4.x)+h*4096u+pos,64u,ROW);
+        for(uint c=0u;c<acc1.length();c++) {
+            precise float biased=acc1[c]+bias[c];
+            acc1[c]=biased;
+        }
+    }
+    CH narrowed=CH(acc1);
+    if(pc.p5.x!=0) {
+        coopMatStore(narrowed,sp,pos,64u,ROW);
+        subgroupMemoryBarrierShared();subgroupBarrier();
+        for(uint e=lane;e<128u;e+=32u) {
+            uint address=pos+e/16u*64u+e%16u;
+            dbg[ldbg(1u,w,h,address)]=float(sp[address]);
+        }
+        subgroupMemoryBarrierShared();subgroupBarrier();
+    }
+    // M05 paired exp (C5 split16-attention-m05-expair-v1): bit-identical
+    // to the scalar exponential loop (10-bit mantissa, no lane cross-talk);
+    // applied at the expanded code position, macro definition untouched.
+    {f16vec2 e01=exponential2(f16vec2(narrowed[0],narrowed[1]));narrowed[0]=e01.x;narrowed[1]=e01.y;
+     f16vec2 e23=exponential2(f16vec2(narrowed[2],narrowed[3]));narrowed[2]=e23.x;narrowed[3]=e23.y;}
+    coopMatStore(narrowed,sp,pos,64u,ROW);
+    if(pc.p5.x!=0) {
+        subgroupMemoryBarrierShared();subgroupBarrier();
+        for(uint e=lane;e<128u;e+=32u) {
+            uint address=pos+e/16u*64u+e%16u;
+            dbg[ldbg(2u,w,h,address)]=float(sp[address]);
+        }
+    }
+}
+    }
+    barrier();
+    if(lid<64u) {
+        float16_t part[8];
+        for(uint c=0u;c<8u;c++) {
+            precise float16_t a=float16_t(0.0);
+            for(uint j=0u;j<4u;j++) {
+                precise float16_t pair=sp[lid*64u+j*16u+c]+sp[lid*64u+j*16u+c+8u];
+                a=a+pair;
+            }
+            part[c]=a;
+        }
+        precise float16_t e0=part[0]+part[2],e1=part[4]+part[6];
+        precise float16_t o0=part[1]+part[3],o1=part[5]+part[7];
+        precise float16_t even=e0+e1,odd=o0+o1,total=even+odd;
+#if ROW_OWNER
+        float16_t inv=float16_t(1.0/max(float(total),6.103515625e-05));
+        for(uint c=0u;c<64u;c++) {
+            uint e=lid*64u+c;
+            sp[e]=sp[e]*inv;
+            if(pc.p5.x!=0) dbg[ldbg(3u,w,h,e)]=float(sp[e]);
+        }
+#else
+        sn[128u+lid]=float16_t(1.0/max(float(total),6.103515625e-05));
+#endif
+    }
+#if !ROW_OWNER
+    barrier();
+    for(uint e=lid;e<4096u;e+=256u) {
+        sp[e]=sp[e]*sn[128u+e/64u];
+        if(pc.p5.x!=0) dbg[ldbg(3u,w,h,e)]=float(sp[e]);
+    }
+#endif
+    barrier();
+    uint m0=sg*8u;
+    MC acc0=MC(0.0),acc1=MC(0.0);
+    for(uint k=0u;k<64u;k+=16u) {
+        MA a;MB b0,b1;
+        coopMatLoad(a,sp,m0*64u+k,64u,ROW);
+        coopMatLoad(b0,VBUF,VBASE+k,64u,COL);
+        coopMatLoad(b1,VBUF,VBASE+16u*64u+k,64u,COL);
+        acc0=coopMatMulAdd(a,b0,acc0);acc1=coopMatMulAdd(a,b1,acc1);
+    }
+    for(uint side=0u;side<2u;side++) {
+        if(side==0u) { CH narrowed=CH(acc0); coopMatStore(narrowed,qkv,sg*128u,16u,ROW); }
+        else { CH narrowed=CH(acc1); coopMatStore(narrowed,qkv,sg*128u,16u,ROW); }
+        subgroupMemoryBarrierShared();subgroupBarrier();
+        for(uint e=lane;e<128u;e+=32u) {
+            bool valid;uint t=window_token(wx,wy,m0+e/16u,valid);
+            if(valid) gt[tiled(t,h*32u+side*16u+e%16u,512u)]=qkv[sg*128u+e];
+        }
+        subgroupMemoryBarrierShared();subgroupBarrier();
+    }
+}

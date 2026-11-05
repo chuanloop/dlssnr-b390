@@ -1,0 +1,342 @@
+// c128 D3 attention, ownership-reblocked variant (T2, 2026-10-18).
+//
+// Parent: candidates/amd-map-20261015/s3-c128-attention-complete/source/c128_attention_complete_fp16.comp
+// (deployed SPV attention-c128-complete.spv, sha 35574d4d9cd64a08...).
+//
+// Same method as the gated c64-ownership-v1, but this is an INDEPENDENT identity:
+// its own SPV, its own plan, its own four gates, its own double parent and its own
+// counters.  It is not layered on the C64 candidate and the two are never mixed in
+// one plan.
+//
+// WHAT CHANGED
+//   shPhase[4096] (8192 B) is deleted.  Each score subgroup now owns 16 queries and
+//   all 64 keys, the score is computed transposed (S^T = K.Q^T), the sealed C128
+//   balanced denominator tree is reduced in lane with one subgroupShuffleXor(16),
+//   and P^T becomes the PV B operand through the existing, hardware-verified
+//   nrh_join_rows_to_B.  Shared goes 20,992 -> 12,800 B.
+//
+// THE ONE STRUCTURAL DIFFERENCE FROM THE PARENT'S CONTEXT STAGE, AND WHY IT IS SAFE
+//   The parent computes ctx^T = P . V^T with A = P rows (query, key) and B = V
+//   (feature, key): element (query m, feature n) = sum_k P[m][k] * V[n][k].
+//   The new kernel computes the same output as (feature n, query m) with A = V^T
+//   (feature, key) and B = P^T (key, query): element (n, m) = sum_k V[n][k] * P[m][k].
+//   The products are the same two FP16 operands in the other order (FP16 multiply is
+//   commutative and exact), and the K accumulation order j = 0,1,2,3 is unchanged, so
+//   every element is bit-identical; only the store changes from RowMajor [query]
+//   [feature] to ColumnMajor [feature][query] of the same canonical addresses.
+//
+// WHAT IS PRESERVED
+//   * the QKV projection verbatim (K = 128, eight K16 steps, one A fragment for all six
+//     accumulators, per-head weight offsets, the transposed V store);
+//   * the norm owner pass (c128_norm_sum32, one thread per token) and the in-place scale
+//     pass with the parent's exact expression `qkv * (half(shNorm[t]) * sh)`;
+//   * FP32 accumulation for every MMA and exactly one MC->MH narrowing per output tile;
+//     the one in-flight block per key block is narrowed immediately, so no FP32
+//     accumulator array is held live;
+//   * the sealed C128 probability tree term for term:
+//       t_j[c] = P[16j+c] + P[16j+c+8]; part[c] = ((t0+t1)+t2)+t3
+//       even = (part[0]+part[2])+(part[4]+part[6]); odd likewise; s = even+odd
+//       inv = half(1.0 / max(float(s), 6.103515625e-05)); P := half(P*inv)
+//   * the PV K order and the canonical gT address (w*64+query)*128 + 32*h + dim;
+//   * the same logical MMA work: 64 score + 64 context MMAs per workgroup;
+//   * every debug echo at the parent address, transposed where the accumulator
+//     orientation changed.
+//
+// COST, RECORDED
+//   + 4 of 8 subgroups idle during score and PV; not converted to ALU or ms, not free.
+//   + GEN instructions rise (the in-lane tree, the reciprocal broadcast, four joins);
+//     the native scratch/instruction reading is collected for this identity, not assumed.
+//   - 8192 B of workgroup memory and three workgroup barriers are gone.
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 256) in;
+#include "nb03_swin_c128_common.glsl"
+#include "register_handoff.glsl"
+
+layout(set = 0, binding = 6) buffer YBuf { float16_t gY[]; };
+layout(set = 0, binding = 7) buffer TBuf { float16_t gT[]; };
+
+shared float16_t qkv[6144]; // same Q/K/V half layout: +0/+2048/+4096
+shared float16_t shNorm[256];    // nq/nk/inv         512 B
+
+#define MAT_H coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>
+
+// One 8-key block of S^T = K.Q^T for 16 queries: rows = keys kb..kb+7, cols = queries.
+MAT_H c128_score_block(uint kb, uint qg, uint h) {
+    const bool debug = pc.p1.w != 0;
+    MAT_C acc = MAT_C(float16_t(0.0));
+    for (uint ki = 0u; ki < 2u; ++ki) {
+        MAT_A a; coopMatLoad(a, qkv, 2048u + (kb * 32u + ki * 16u), 32u, LROW); // K rows
+        MAT_B b; coopMatLoad(b, qkv, 0u + (qg * 32u + ki * 16u), 32u, LCOL);     // Q^T
+        acc = coopMatMulAdd(a, b, acc);
+    }
+    if (debug) coopMatStore(acc, dbgf, 65536u + h * 4096u + qg * 64u + kb, 64u, LCOL);
+    {
+        MAT_C bias;
+        coopMatLoad(bias, auxf, uint(pc.p4.w) + uint(h) * 4096u + qg * 64u + kb, 64u, LCOL);
+        for (int ci = 0; ci < acc.length(); ++ci) {
+            precise float biased = acc[ci] + bias[ci];
+            acc[ci] = biased;
+        }
+        MAT_H values = MAT_H(acc);
+        if (debug) coopMatStore(values, dbg, 163840u + h * 4096u + qg * 64u + kb, 64u, LCOL);
+        for (int ci = 0; ci < values.length(); ++ci)
+            values[ci] = c128_exp_h(values[ci]);
+        if (debug) coopMatStore(values, dbg, 180224u + h * 4096u + qg * 64u + kb, 64u, LCOL);
+        return values;
+    }
+}
+
+void main() {
+    const uint t_local = gl_LocalInvocationID.x;
+    const uint sg = t_local / 32u;
+    const uint lane = t_local % 32u;
+    const uint wx = (pc.p1.z != 0) ? uint(pc.p2.x) : gl_WorkGroupID.x;
+    const uint wy = (pc.p1.z != 0) ? uint(pc.p2.y) : gl_WorkGroupID.y;
+    const uint h = gl_WorkGroupID.z;
+    const uint w = wy * uint(pc.p1.x) + wx;
+    const bool debug = pc.p1.w != 0;
+    const uint wq = uint(pc.p3.w);
+
+    // D2 writes all canonical window slots, including image-OOB tokens.
+    // One head echoes the same complete Y debug view; no shared publication needed.
+    if (debug && h == 0u) {
+        for (uint e = t_local; e < 8192u; e += 256u)
+            dbg[81920u + e] = gY[w * 8192u + e];
+    }
+
+    // AN6: one standard direct-Y A fragment feeds all six Q/K/V fragments.
+    {
+        uint m0 = sg * 8u;
+        MAT_C accQ0 = MAT_C(float16_t(0.0));
+        MAT_C accQ1 = MAT_C(float16_t(0.0));
+        MAT_C accK0 = MAT_C(float16_t(0.0));
+        MAT_C accK1 = MAT_C(float16_t(0.0));
+        MAT_C accV0 = MAT_C(float16_t(0.0));
+        MAT_C accV1 = MAT_C(float16_t(0.0));
+        for (uint ki = 0u; ki < 8u; ++ki) {
+            uint k0 = ki * 16u;
+            MAT_A a; coopMatLoad(a, gY, (w * 64u + m0) * 128u + k0, 128u, LROW);
+            {
+                MAT_B b0, b1;
+                coopMatLoad(b0, pack, wq + (((96u * h + 0u) / 16u) * 8u + ki) * 256u, 16u, LCOL);
+                coopMatLoad(b1, pack, wq + (((96u * h + 16u) / 16u) * 8u + ki) * 256u, 16u, LCOL);
+                accQ0 = coopMatMulAdd(a, b0, accQ0);
+                accQ1 = coopMatMulAdd(a, b1, accQ1);
+            }
+            {
+                MAT_B b0, b1;
+                coopMatLoad(b0, pack, wq + (((96u * h + 32u) / 16u) * 8u + ki) * 256u, 16u, LCOL);
+                coopMatLoad(b1, pack, wq + (((96u * h + 48u) / 16u) * 8u + ki) * 256u, 16u, LCOL);
+                accK0 = coopMatMulAdd(a, b0, accK0);
+                accK1 = coopMatMulAdd(a, b1, accK1);
+            }
+            {
+                MAT_B b0, b1;
+                coopMatLoad(b0, pack, wq + (((96u * h + 64u) / 16u) * 8u + ki) * 256u, 16u, LCOL);
+                coopMatLoad(b1, pack, wq + (((96u * h + 80u) / 16u) * 8u + ki) * 256u, 16u, LCOL);
+                accV0 = coopMatMulAdd(a, b0, accV0);
+                accV1 = coopMatMulAdd(a, b1, accV1);
+            }
+        }
+        MAT_H narrowed = MAT_H(accQ0);
+        coopMatStore(narrowed, qkv, m0 * 32u, 32u, LROW);
+        narrowed = MAT_H(accQ1);
+        coopMatStore(narrowed, qkv, m0 * 32u + 16u, 32u, LROW);
+        narrowed = MAT_H(accK0);
+        coopMatStore(narrowed, qkv, 2048u + m0 * 32u, 32u, LROW);
+        narrowed = MAT_H(accK1);
+        coopMatStore(narrowed, qkv, 2048u + m0 * 32u + 16u, 32u, LROW);
+        narrowed = MAT_H(accV0);
+        coopMatStore(narrowed, qkv, 4096u + m0, 64u, LCOL);
+        narrowed = MAT_H(accV1);
+        coopMatStore(narrowed, qkv, 4096u + 16u * 64u + m0, 64u, LCOL);
+    }
+    barrier();
+
+    // Existing full-WG barrier makes the raw QKV slab visible. Debug is
+    // single-window only: existing debug addresses have no window dimension.
+    if (debug) {
+        for (uint e = t_local; e < 2048u; e += 256u) {
+            uint dst = (e / 32u) * 128u + 32u * h + e % 32u;
+            dbg[90112u + dst] = qkv[e];
+            dbg[98304u + dst] = qkv[2048u + e];
+            dbg[106496u + dst] = qkv[4096u + (e % 32u) * 64u + e / 32u];
+        }
+    }
+
+    // ---- norm: one owner thread per token computes nq/nk (S4 half tree) ----
+    if (t_local < 64u) {
+        uint t = t_local;
+        float qrow[32], krow[32];
+        for (uint c = 0u; c < 32u; ++c) {
+            qrow[c] = float(qkv[0u + (t * 32u + c)]);
+            krow[c] = float(qkv[2048u + (t * 32u + c)]);
+        }
+        float sq = c128_norm_sum32(qrow);
+        float sk = c128_norm_sum32(krow);
+        float eps = float(float16_t(0.000062));
+        shNorm[t]        = float16_t(inversesqrt(max(sq, eps)));  // inf -> 0
+        shNorm[64u + t]  = float16_t(inversesqrt(max(sk, eps)));
+    }
+    barrier();
+
+    // ---- scale: parent expression verbatim: qkv * (half(shNorm[t]) * sh) ----
+    float16_t sh = float16_t(auxf[uint(pc.p5.x) + h]);
+    for (uint e = t_local; e < 2048u; e += 256u) {
+        uint t = e / 32u, d = e % 32u;
+        qkv[0u + (t * 32u + d)] = float16_t(qkv[0u + (t * 32u + d)]
+                                     * (float16_t(shNorm[t]) * sh));
+        qkv[2048u + (t * 32u + d)] = float16_t(qkv[2048u + (t * 32u + d)]
+                                     * float16_t(shNorm[64u + t]));
+    }
+    if (debug) {
+        barrier();
+        for (uint e = t_local; e < 2048u; e += 256u) {
+            uint t = e / 32u, d = e % 32u;
+            dbg[114688u + t * 128u + 32u * h + d] = qkv[0u + (e)];   // Q debug
+            dbg[122880u + t * 128u + 32u * h + d] = qkv[2048u + (e)];   // K debug
+        }
+    }
+    barrier();
+
+    // ---- score + denominator + PV, all in registers, four query-block owners ----
+    if (sg < 4u) {
+        const uint qg = sg * 16u;   // this subgroup owns queries qg..qg+15
+        MAT_H p00 = c128_score_block(0u, qg, h);
+        MAT_H p01 = c128_score_block(8u, qg, h);
+        MAT_H p10 = c128_score_block(16u, qg, h);
+        MAT_H p11 = c128_score_block(24u, qg, h);
+        MAT_H p20 = c128_score_block(32u, qg, h);
+        MAT_H p21 = c128_score_block(40u, qg, h);
+        MAT_H p30 = c128_score_block(48u, qg, h);
+        MAT_H p31 = c128_score_block(56u, qg, h);
+
+        // Sealed C128 tree, rebuilt in lane (same derivation as c64-ownership-v1).
+        precise float16_t part[4];
+        part[0] = p00[0] + p01[0];
+        part[1] = p00[1] + p01[1];
+        part[2] = p00[2] + p01[2];
+        part[3] = p00[3] + p01[3];
+        part[0] = part[0] + (p10[0] + p11[0]);
+        part[1] = part[1] + (p10[1] + p11[1]);
+        part[2] = part[2] + (p10[2] + p11[2]);
+        part[3] = part[3] + (p10[3] + p11[3]);
+        part[0] = part[0] + (p20[0] + p21[0]);
+        part[1] = part[1] + (p20[1] + p21[1]);
+        part[2] = part[2] + (p20[2] + p21[2]);
+        part[3] = part[3] + (p20[3] + p21[3]);
+        part[0] = part[0] + (p30[0] + p31[0]);
+        part[1] = part[1] + (p30[1] + p31[1]);
+        part[2] = part[2] + (p30[2] + p31[2]);
+        part[3] = part[3] + (p30[3] + p31[3]);
+        precise float16_t mine = (part[0] + part[1]) + (part[2] + part[3]);
+        f16vec2 ex = unpackFloat2x16(subgroupShuffleXor(packFloat2x16(f16vec2(mine, mine)), 16u));
+        precise float16_t s = (lane / 16u == 0u) ? mine + ex.x : ex.x + mine;
+        precise float16_t inv = float16_t(1.0 / max(float(s), 6.103515625e-05));
+        f16vec2 iv = unpackFloat2x16(subgroupShuffle(packFloat2x16(f16vec2(inv, inv)), lane & 15u));
+        precise float16_t ivq = iv.x;
+        p00[0] = float16_t(p00[0] * ivq); p00[1] = float16_t(p00[1] * ivq);
+        p00[2] = float16_t(p00[2] * ivq); p00[3] = float16_t(p00[3] * ivq);
+        p01[0] = float16_t(p01[0] * ivq); p01[1] = float16_t(p01[1] * ivq);
+        p01[2] = float16_t(p01[2] * ivq); p01[3] = float16_t(p01[3] * ivq);
+        p10[0] = float16_t(p10[0] * ivq); p10[1] = float16_t(p10[1] * ivq);
+        p10[2] = float16_t(p10[2] * ivq); p10[3] = float16_t(p10[3] * ivq);
+        p11[0] = float16_t(p11[0] * ivq); p11[1] = float16_t(p11[1] * ivq);
+        p11[2] = float16_t(p11[2] * ivq); p11[3] = float16_t(p11[3] * ivq);
+        p20[0] = float16_t(p20[0] * ivq); p20[1] = float16_t(p20[1] * ivq);
+        p20[2] = float16_t(p20[2] * ivq); p20[3] = float16_t(p20[3] * ivq);
+        p21[0] = float16_t(p21[0] * ivq); p21[1] = float16_t(p21[1] * ivq);
+        p21[2] = float16_t(p21[2] * ivq); p21[3] = float16_t(p21[3] * ivq);
+        p30[0] = float16_t(p30[0] * ivq); p30[1] = float16_t(p30[1] * ivq);
+        p30[2] = float16_t(p30[2] * ivq); p30[3] = float16_t(p30[3] * ivq);
+        p31[0] = float16_t(p31[0] * ivq); p31[1] = float16_t(p31[1] * ivq);
+        p31[2] = float16_t(p31[2] * ivq); p31[3] = float16_t(p31[3] * ivq);
+        if (debug) {
+            coopMatStore(p00, dbg, 196608u + h * 4096u + qg * 64u + 0u, 64u, LCOL);
+            coopMatStore(p01, dbg, 196608u + h * 4096u + qg * 64u + 8u, 64u, LCOL);
+            coopMatStore(p10, dbg, 196608u + h * 4096u + qg * 64u + 16u, 64u, LCOL);
+            coopMatStore(p11, dbg, 196608u + h * 4096u + qg * 64u + 24u, 64u, LCOL);
+            coopMatStore(p20, dbg, 196608u + h * 4096u + qg * 64u + 32u, 64u, LCOL);
+            coopMatStore(p21, dbg, 196608u + h * 4096u + qg * 64u + 40u, 64u, LCOL);
+            coopMatStore(p30, dbg, 196608u + h * 4096u + qg * 64u + 48u, 64u, LCOL);
+            coopMatStore(p31, dbg, 196608u + h * 4096u + qg * 64u + 56u, 64u, LCOL);
+        }
+
+        // ---- PV: (feature, query) = V^T . P^T, K order j = 0,1,2,3 unchanged ----
+        MAT_C c0 = MAT_C(float16_t(0.0));
+        MAT_C c1 = MAT_C(float16_t(0.0));
+        MAT_C c2 = MAT_C(float16_t(0.0));
+        MAT_C c3 = MAT_C(float16_t(0.0));
+        {
+            NRH_B b = nrh_join_rows_to_B(p00, p01);
+            MAT_A a;
+            coopMatLoad(a, qkv, 4096u + 0u * 64u + 0u, 64u, LROW);
+            c0 = coopMatMulAdd(a, b, c0);
+            coopMatLoad(a, qkv, 4096u + 8u * 64u + 0u, 64u, LROW);
+            c1 = coopMatMulAdd(a, b, c1);
+            coopMatLoad(a, qkv, 4096u + 16u * 64u + 0u, 64u, LROW);
+            c2 = coopMatMulAdd(a, b, c2);
+            coopMatLoad(a, qkv, 4096u + 24u * 64u + 0u, 64u, LROW);
+            c3 = coopMatMulAdd(a, b, c3);
+        }
+        {
+            NRH_B b = nrh_join_rows_to_B(p10, p11);
+            MAT_A a;
+            coopMatLoad(a, qkv, 4096u + 0u * 64u + 16u, 64u, LROW);
+            c0 = coopMatMulAdd(a, b, c0);
+            coopMatLoad(a, qkv, 4096u + 8u * 64u + 16u, 64u, LROW);
+            c1 = coopMatMulAdd(a, b, c1);
+            coopMatLoad(a, qkv, 4096u + 16u * 64u + 16u, 64u, LROW);
+            c2 = coopMatMulAdd(a, b, c2);
+            coopMatLoad(a, qkv, 4096u + 24u * 64u + 16u, 64u, LROW);
+            c3 = coopMatMulAdd(a, b, c3);
+        }
+        {
+            NRH_B b = nrh_join_rows_to_B(p20, p21);
+            MAT_A a;
+            coopMatLoad(a, qkv, 4096u + 0u * 64u + 32u, 64u, LROW);
+            c0 = coopMatMulAdd(a, b, c0);
+            coopMatLoad(a, qkv, 4096u + 8u * 64u + 32u, 64u, LROW);
+            c1 = coopMatMulAdd(a, b, c1);
+            coopMatLoad(a, qkv, 4096u + 16u * 64u + 32u, 64u, LROW);
+            c2 = coopMatMulAdd(a, b, c2);
+            coopMatLoad(a, qkv, 4096u + 24u * 64u + 32u, 64u, LROW);
+            c3 = coopMatMulAdd(a, b, c3);
+        }
+        {
+            NRH_B b = nrh_join_rows_to_B(p30, p31);
+            MAT_A a;
+            coopMatLoad(a, qkv, 4096u + 0u * 64u + 48u, 64u, LROW);
+            c0 = coopMatMulAdd(a, b, c0);
+            coopMatLoad(a, qkv, 4096u + 8u * 64u + 48u, 64u, LROW);
+            c1 = coopMatMulAdd(a, b, c1);
+            coopMatLoad(a, qkv, 4096u + 16u * 64u + 48u, 64u, LROW);
+            c2 = coopMatMulAdd(a, b, c2);
+            coopMatLoad(a, qkv, 4096u + 24u * 64u + 48u, 64u, LROW);
+            c3 = coopMatMulAdd(a, b, c3);
+        }
+        // Canonical T: gT[(w*64+query)*128 + 32*h + dim], one narrowing per tile.
+        MAT_H n0 = MAT_H(c0);
+        MAT_H n1 = MAT_H(c1);
+        MAT_H n2 = MAT_H(c2);
+        MAT_H n3 = MAT_H(c3);
+        coopMatStore(n0, gT, (w * 64u + qg) * 128u + 32u * h + 0u, 128u, LCOL);
+        coopMatStore(n1, gT, (w * 64u + qg) * 128u + 32u * h + 8u, 128u, LCOL);
+        coopMatStore(n2, gT, (w * 64u + qg) * 128u + 32u * h + 16u, 128u, LCOL);
+        coopMatStore(n3, gT, (w * 64u + qg) * 128u + 32u * h + 24u, 128u, LCOL);
+        if (debug) {
+            coopMatStore(n0, dbg, 212992u + qg * 128u + 32u * h + 0u, 128u, LCOL);
+            coopMatStore(n1, dbg, 212992u + qg * 128u + 32u * h + 8u, 128u, LCOL);
+            coopMatStore(n2, dbg, 212992u + qg * 128u + 32u * h + 16u, 128u, LCOL);
+            coopMatStore(n3, dbg, 212992u + qg * 128u + 32u * h + 24u, 128u, LCOL);
+        }
+    }
+}

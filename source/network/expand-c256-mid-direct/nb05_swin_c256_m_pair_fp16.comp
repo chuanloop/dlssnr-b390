@@ -1,0 +1,145 @@
+// c256_d1_expand_mid_fp16.comp — D1: grouped expand + act + mid (guide §5).
+// Grid 22×13×4 (z = head group g); shared X[64,128] + A[64,128] + float
+// scratch [8 SG][128] = 36,864 B. 2acc + double-B, pair formula Np=4 (expand)
+// / Np=1 (mid). X dies after expand, A after mid; outputs M to global (half).
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 256) in;
+#include "nb05_swin_c256_common.glsl"
+
+layout(set = 0, binding = 5) buffer MBuf { float16_t gM[]; };
+
+shared float16_t shA[4096];      // [64][128]
+
+#define MAT_H coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>
+
+void main() {
+    const uint t_local = gl_LocalInvocationID.x;
+    const uint sg = t_local / 32u;
+    const uint lane = t_local % 32u;
+    const uint wx = (pc.p1.z != 0) ? uint(pc.p2.x) : gl_WorkGroupID.x;
+    const uint wy = (pc.p1.z != 0) ? uint(pc.p2.y) : gl_WorkGroupID.y;
+    const uint g = gl_WorkGroupID.z / 2u;
+    const uint t0 = (gl_WorkGroupID.z % 2u) * 32u;
+    const uint w = wy * uint(pc.p1.x) + wx;
+    const bool debug = pc.p1.w != 0;
+
+    // Same canonical X debug half bits; no shared publication/retirement.
+    if (debug && g == 0u) {
+        for (uint e = t_local; e < 8192u; e += 256u) {
+            bool oob;
+            uint addr = c256_img_half_index(t0 + e / 256u, e % 256u, wx, wy, oob);
+            dbg[t0 * 256u + e] = oob ? float16_t(0.0) : imgin[addr];
+        }
+    }
+
+    // ---- expand 64×128×128: Nc=8, Np=4; per pair A(X rows) shared ----
+    const uint we = uint(pc.p3.x);
+    for (uint r = 0u; r < 1u; ++r) {
+        uint mA = (sg / 4u + 4u * r) * 8u;
+        uint mB = mA + 16u;
+        uint n0 = (sg % 4u) * 32u;
+        // Actual M8 stays in one token16 tile. C256 token base includes its own z shard.
+        // Hoist tile addresses; K16 steps advance one channel tile, with uniform OOB.
+        bool oobA, oobB;
+        uint xA = c256_img_half_index(t0 + mA, 0u, wx, wy, oobA);
+        uint xB = c256_img_half_index(t0 + mB, 0u, wx, wy, oobB);
+        MAT_C accA0 = MAT_C(float16_t(0.0));
+        MAT_C accA1 = MAT_C(float16_t(0.0));
+        MAT_C accB0 = MAT_C(float16_t(0.0));
+        MAT_C accB1 = MAT_C(float16_t(0.0));
+        for (uint ki = 0u; ki < 16u; ++ki) {
+            uint k0 = ki * 16u;
+            MAT_B wb0; coopMatLoad(wb0, pack, we + ((128u * g + n0) / 16u) * 16u * 256u + ki * 256u, 16u, LCOL);
+            MAT_B wb1; coopMatLoad(wb1, pack, we + ((128u * g + n0 + 16u) / 16u) * 16u * 256u + ki * 256u, 16u, LCOL);
+            MAT_A a = MAT_A(float16_t(0.0));
+            if (!oobA) coopMatLoad(a, imgin, xA + ki * 256u, 16u, LROW);
+            accA0 = coopMatMulAdd(a, wb0, accA0);
+            accA1 = coopMatMulAdd(a, wb1, accA1);
+            a = MAT_A(float16_t(0.0));
+            if (!oobB) coopMatLoad(a, imgin, xB + ki * 256u, 16u, LROW);
+            accB0 = coopMatMulAdd(a, wb0, accB0);
+            accB1 = coopMatMulAdd(a, wb1, accB1);
+        }
+        {
+            MAT_H values = MAT_H(accA0);
+            if (debug)
+                coopMatStore(values, dbg, 16384u + (t0 + mA) * 1024u + 128u * g + n0 + 0u, 1024u, LROW);
+            for (int ci = 0; ci < values.length(); ++ci)
+                values[ci] = c256_act_h(values[ci]);
+            coopMatStore(values, shA, mA * 128u + n0 + 0u, 128u, LROW);
+            if (debug)
+                coopMatStore(values, dbg, 81920u + (t0 + mA) * 1024u + 128u * g + n0 + 0u, 1024u, LROW);
+        }
+        {
+            MAT_H values = MAT_H(accA1);
+            if (debug)
+                coopMatStore(values, dbg, 16384u + (t0 + mA) * 1024u + 128u * g + n0 + 16u, 1024u, LROW);
+            for (int ci = 0; ci < values.length(); ++ci)
+                values[ci] = c256_act_h(values[ci]);
+            coopMatStore(values, shA, mA * 128u + n0 + 16u, 128u, LROW);
+            if (debug)
+                coopMatStore(values, dbg, 81920u + (t0 + mA) * 1024u + 128u * g + n0 + 16u, 1024u, LROW);
+        }
+        {
+            MAT_H values = MAT_H(accB0);
+            if (debug)
+                coopMatStore(values, dbg, 16384u + (t0 + mB) * 1024u + 128u * g + n0 + 0u, 1024u, LROW);
+            for (int ci = 0; ci < values.length(); ++ci)
+                values[ci] = c256_act_h(values[ci]);
+            coopMatStore(values, shA, mB * 128u + n0 + 0u, 128u, LROW);
+            if (debug)
+                coopMatStore(values, dbg, 81920u + (t0 + mB) * 1024u + 128u * g + n0 + 0u, 1024u, LROW);
+        }
+        {
+            MAT_H values = MAT_H(accB1);
+            if (debug)
+                coopMatStore(values, dbg, 16384u + (t0 + mB) * 1024u + 128u * g + n0 + 16u, 1024u, LROW);
+            for (int ci = 0; ci < values.length(); ++ci)
+                values[ci] = c256_act_h(values[ci]);
+            coopMatStore(values, shA, mB * 128u + n0 + 16u, 128u, LROW);
+            if (debug)
+                coopMatStore(values, dbg, 81920u + (t0 + mB) * 1024u + 128u * g + n0 + 16u, 1024u, LROW);
+        }
+    }
+    barrier();   // expand complete for all SGs; A visible
+
+    // ---- act already applied in epilogue (A lives in shA) ----
+
+    // ---- mid 64×32×128: Nc=2, Np=1; m0=8*sg, n0=0/16; output -> global M ----
+    const uint wm = uint(pc.p3.y);
+    if (sg < 4u) {
+        uint m0 = sg * 8u;
+        MAT_C acc0 = MAT_C(float16_t(0.0));
+        MAT_C acc1 = MAT_C(float16_t(0.0));
+        for (uint ki = 0u; ki < 8u; ++ki) {
+            uint k0 = ki * 16u;
+            MAT_A a;  coopMatLoad(a, shA, m0 * 128u + k0, 128u, LROW);
+            MAT_B b0; coopMatLoad(b0, pack, wm + (32u * g) * 128u + k0,
+                                  128u, LCOL);
+            MAT_B b1; coopMatLoad(b1, pack, wm + (32u * g + 16u) * 128u + k0,
+                                  128u, LCOL);
+            acc0 = coopMatMulAdd(a, b0, acc0);
+            acc1 = coopMatMulAdd(a, b1, acc1);
+        }
+        // M3/S1 direct mid store: the F32 scratch round trip and its four subgroup
+        // barriers are deleted.  MAT_H(acc) narrows each accumulator component exactly
+        // where `float16_t(shScratch[...])` did, and the RowMajor stride-256 store
+        // writes the same (row, col) -> gM[(w * 64u + t0 + m0 + m) * 256u + 32u*g (+16) + col]
+        // elements the scalar loop wrote.
+        MAT_H mh0 = MAT_H(acc0);
+        coopMatStore(mh0, gM, (w * 64u + t0 + m0) * 256u + 32u * g, 256u, LROW);
+        if (debug)
+            coopMatStore(mh0, dbg, 147456u + (t0 + m0) * 256u + 32u * g, 256u, LROW);
+        MAT_H mh1 = MAT_H(acc1);
+        coopMatStore(mh1, gM, (w * 64u + t0 + m0) * 256u + 32u * g + 16u, 256u, LROW);
+        if (debug)
+            coopMatStore(mh1, dbg, 147456u + (t0 + m0) * 256u + 32u * g + 16u, 256u, LROW);
+    }
+}

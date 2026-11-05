@@ -1,0 +1,604 @@
+// S37-CONTEXT-A v1 (2026-10-20): context->projection register handoff.
+// Derived from the deployed R1a source; only stage 8/9 context transport changes:
+// the two H(C) context fragments stay live in registers across the projection
+// seed construction, the shared NR_CTX publication is debug-only, and the two
+// projection A fragments are built from the retained half components (A and
+// accumulator-half lane/component maps are identical on B580). No arithmetic,
+// K order, barrier or allocation change.
+// R1: fold+body derived from the deployed reference body source
+// candidates/amd-map-20261015/s2-c32-lifetime/full/c32_lifetime.comp,
+// which recompiles byte-for-byte to the deployed parent pass 264 SPV c32-full.spv.
+// Only stage-0 fold, skip binding 5, p4/p7 push are added; the rest is the
+// reference module verbatim (debug blocks, 22 barriers, stage-9 store form,
+// implicit c7 contraction; no explicit c7 FMA).
+// B3-01 bounded two-M B reuse; NB09 stage3..9 unchanged.
+// NB09 approved A_ONLY stage1 and NB06 stage6 only.
+// NB01 phase owners; original seed and MMA preserved.
+// Isolated candidate: direct_shared; no B hoist or mathematical change.
+// Task-owned copy: sealed C32 DB math, dynamic tiles_y and shift_y in p3.zw.
+// c32_pair_db_fp16.comp — P2 double-B scheduling candidate (derived from B1;
+// ONLY the K-loop load order differs: load A -> load B0 -> load B1 -> MMA0 ->
+// MMA1, so both B reads issue early at the cost of B0/B1 possibly coalive.
+// Same pairing, accumulators, math, shared, K order as B1):
+// P2 B1 candidate: complete C32 module with 2-accumulator
+// same-row adjacent-column pairing (supplement §5), single-variable candidate
+// vs B0 (c32_plain_fp16.comp): only the accumulator organization changes —
+// coordinate recompute, SG32/WG256 (8 SG), feeding, math, shared layout,
+// K order and module boundaries are all identical to B0.
+//
+// Pair-flattened assignment: Np = Nc/2, p = sg + 8*j, r = p/Np, b = p%Np,
+// m0 = 8*r, n0 = 32*b. Each subgroup round owns one output-row pair of
+// adjacent 16-column tiles: acc0 at (m0, n0), acc1 at (m0, n0+16).
+// Per pair: acc0/acc1 built together over the full K loop with A loaded once
+// per k0; acc0 stored/scattered first (scratch reused), acc1 still live during
+// acc0's output; both results persisted (supplement §5 items 1–5).
+//
+// Stage pairing table (supplement §5):
+//   expand    Nc=8  Np=4  j=0..3  r = sg/4 + 2j, b = sg%4
+//   contract  Nc=2  Np=1  1 round r = sg, b = 0
+//   QKV       Nc=6  Np=3  j=0..2  p = sg+8j, r = p/3, b = p%3
+//   score     Nc=4  Np=2  j=0..1  r = sg/2 + 4j, b = sg%2
+//   context   Nc=2  Np=1  1 round r = sg, b = 0
+//   projection Nc=2 Np=1  1 round r = sg, b = 0
+
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout(set = 0, binding = 0) buffer HalfBuf  { float16_t wb[];  };  // pack
+layout(set = 0, binding = 1) buffer FloatBuf { float fb[];      };  // bias[4096], scalar0
+layout(set = 0, binding = 2) buffer Coarse   { float16_t coarse[]; };  // postblend main (672x384)
+layout(set = 0, binding = 5) buffer SkipBuf  { float16_t skipx[];  };  // postblend skip (1344x768)
+layout(set = 0, binding = 3) buffer ImageOut { float residual_out[]; };  // window output
+layout(set = 0, binding = 4) buffer DebugBuf { float16_t dbg[];    };  // stage dump (debug only)
+
+layout(push_constant) uniform PC {
+    ivec4 p0;   // x = tiles_x, y = shift, z = debug, w = wx_single
+    ivec4 p1;   // x = we_el, y = wc_el, z = wqkv_el, w = wo_el
+    ivec4 p2;   // x = rs_el, y = ars_el, z = scalar0_fel, w = bias_fel
+    ivec4 p3;   // x = wy_single, y = single_flag, z = tiles_y, w = shift_y
+    ivec4 p4;   // x = skip gain half, y = main gain half, z = main gain flag, w = unused
+    ivec4 p5;   // unused
+    ivec4 p6;   // unused
+    ivec4 p7;   // x = coarse_W, y = coarse_H
+} pc;
+
+// ---- shared: 25088 B; no shared score P publication ----
+shared float16_t shXP[2048];      // early X / debug O only; P stays in its consumer owner
+#define shX shXP
+#define shP shXP
+shared float16_t shY[2048];       // 64x32            4096 B
+shared float16_t shArena[8192];   // A[64x128] | Q K V Ctx (2048 each)  16384 B
+
+
+#define NR_A(m, k)    shArena[(m) * 128 + (k)]
+#define NR_Q(t, c)    shArena[(t) * 32 + (c)]
+#define NR_K(t, c)    shArena[2048 + (t) * 32 + (c)]
+#define NR_V(t, c)    shArena[4096 + (t) * 32 + (c)]
+#define NR_CTX(t, c)  shArena[6144 + (t) * 32 + (c)]
+#define NR_P(i, j)    shP[(i) * 64 + (j)]
+
+#define MAT_A coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseA>
+#define MAT_B coopmat<float16_t, gl_ScopeSubgroup, 16, 16, gl_MatrixUseB>
+#define MAT_C coopmat<float, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>
+#define MAT_H coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>
+#define LROW  gl_CooperativeMatrixLayoutRowMajor
+#define LCOL  gl_CooperativeMatrixLayoutColumnMajor
+
+// half MpCubicSilu (guide §2.1): one rounding per half op
+float16_t nr_act_h(float16_t x) {
+    float16_t t = clamp(x, float16_t(-4.0), float16_t(4.0));
+    float16_t u = fma(float16_t(-0.055908203125), abs(t), float16_t(0.447265625));
+    return x * fma(t, u, float16_t(0.89453125));
+}
+
+// half swin exp (guide §2.3)
+float16_t nr_exp_h(float16_t x) {
+    float16_t y = clamp(fma(x, float16_t(0.044921875), float16_t(1.30078125)),
+                        float16_t(1.03125), float16_t(1.5693359375));
+    uint h = packHalf2x16(vec2(float(y), 0.0)) & 0xffffu;
+    return float16_t(unpackHalf2x16((h & 0x03ffu) << 5u).x);
+}
+
+// token coordinates recomputed per element (B0 v3 base, no private tables)
+uint nr_tok_addr(uint t, uint c, uint wx, uint wy, int shift, uint tiles_x, out bool oob) {
+    uint q = t >> 4u, s = t & 15u;
+    int tx = 2 * int(wx) + shift + int(q & 1u);
+    int ty = 2 * int(wy) + pc.p3.w + int(q >> 1u);
+    oob = (tx < 0 || ty < 0 || tx >= int(tiles_x) || ty >= pc.p3.z);
+    uint safe_tx = uint(clamp(tx, 0, int(tiles_x) - 1));
+    uint safe_ty = uint(clamp(ty, 0, pc.p3.z-1));
+    return (((safe_ty * tiles_x + safe_tx) * 2u + c / 16u) * 256u
+            + s * 16u + c % 16u);   // slot = s (4*(y%4)+(x%4), y-major)
+}
+#define NR_TOK_OOB(t) oob_
+#define NR_TOK_ADDR(t, c) nr_tok_addr((t), (c), wx, wy, shift, tiles_x, oob_)
+
+// 4x4-tile 16-channel-plane layout, the same function the postblend/surfaces passes use.
+uint io_at(uint px, uint py, uint c, uint W, uint C) {
+    uint t = ((py / 4u) * (W / 4u) + px / 4u) * 16u + 4u * (py % 4u) + px % 4u;
+    return ((t / 16u) * (C / 16u) + c / 16u) * 256u + (t % 16u) * 16u + c % 16u;
+}
+
+f16vec2 full_norm(float16_t qlo,float16_t qhi,float16_t klo,float16_t khi) {
+ uint col=gl_SubgroupInvocationID&15u;
+ precise float16_t qs=qlo*qlo, ks=klo*klo;
+ precise float16_t qh=qhi*qhi, kh=khi*khi;
+ precise float16_t q=qs+qh, k=ks+kh;
+ if(col==15u) {q=fma(qhi,qhi,qs);k=fma(khi,khi,ks);}
+{f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(f16vec2(q,k)),8u)); bool lower=(col&8u)==0u; q=(lower?q:peer.x)+(lower?peer.x:q); k=(lower?k:peer.y)+(lower?peer.y:k);}
+{f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(f16vec2(q,k)),4u)); bool lower=(col&4u)==0u; q=(lower?q:peer.x)+(lower?peer.x:q); k=(lower?k:peer.y)+(lower?peer.y:k);}
+{f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(f16vec2(q,k)),2u)); bool lower=(col&2u)==0u; q=(lower?q:peer.x)+(lower?peer.x:q); k=(lower?k:peer.y)+(lower?peer.y:k);}
+{f16vec2 peer=unpackFloat2x16(subgroupShuffleXor(packFloat2x16(f16vec2(q,k)),1u)); bool lower=(col&1u)==0u; q=(lower?q:peer.x)+(lower?peer.x:q); k=(lower?k:peer.y)+(lower?peer.y:k);}
+return f16vec2(float16_t(inversesqrt(max(float(q),float(float16_t(0.000062))))),float16_t(inversesqrt(max(float(k),float(float16_t(0.000062))))));}
+
+// Ordered tail projection: one lane per (pixel,output), all SG lanes participate.
+vec4 boundary_project(uint row) {
+    precise vec4 residual=vec4(0);
+    for(uint c=0u;c<32u;c+=2u) {
+        f16vec2 input_pair=f16vec2(shX[row*32u+c],shX[row*32u+c+1u]);
+        f16vec2 wx=f16vec2(wb[17024u+c],wb[17025u+c]);
+        f16vec2 wy=f16vec2(wb[17056u+c],wb[17057u+c]);
+        f16vec2 wz=f16vec2(wb[17088u+c],wb[17089u+c]);
+        f16vec2 ww=f16vec2(wb[17120u+c],wb[17121u+c]);
+        // Only reads are paired. Keep original scalar FP32 updates for c, then c+1.
+        float value=float(input_pair.x);
+        residual.x=residual.x+value*float(wx.x);
+        residual.y=residual.y+value*float(wy.x);
+        residual.z=residual.z+value*float(wz.x);
+        residual.w=residual.w+value*float(ww.x);
+        value=float(input_pair.y);
+        residual.x=residual.x+value*float(wx.y);
+        residual.y=residual.y+value*float(wy.y);
+        residual.z=residual.z+value*float(wz.y);
+        residual.w=residual.w+value*float(ww.y);
+    }
+    return residual;
+}
+
+void main() {
+    const uint t_local = gl_LocalInvocationID.x;
+    const uint sg = t_local / 32u;
+    const uint lane = t_local % 32u;
+    const uint wx = (pc.p3.y != 0) ? uint(pc.p0.w) : gl_WorkGroupID.x;
+    const uint wy = (pc.p3.y != 0) ? uint(pc.p3.x) : gl_WorkGroupID.y;
+    const int shift = pc.p0.y;
+    const uint tiles_x = uint(pc.p0.x);
+    const uint tiles_y = uint(pc.p3.z);
+    const bool debug = pc.p0.z != 0;
+
+    // ============ stage 0: fold the postblend into the gather (R1) ============
+    // Same value the separate postblend pass wrote into ioport_70_ioport_blended:
+    //   main * main_gain (f16) + skip * skip_gain (f16), one rounding per op.
+    {
+        // R1a: c and both gain pairs are k-invariant; loads hoisted, math untouched.
+        const uint c = (t_local & 15u) * 2u;
+        f16vec2 main_gain = f16vec2(float16_t(0.0), float16_t(0.0));
+        if (pc.p4.z != 0)
+            main_gain = f16vec2(wb[pc.p4.y + c], wb[pc.p4.y + c + 1u]);
+        f16vec2 skip_gain = f16vec2(wb[pc.p4.x + c], wb[pc.p4.x + c + 1u]);
+        // One owner retains each coarse half pair across its four output pixels.
+        uint group=t_local>>4u;
+        uint q=group>>2u,cell=group&3u;
+        uint sx=(cell&1u)*2u,sy=(cell>>1u)*2u;
+        int tx=2*int(wx)+shift+int(q&1u);
+        int ty=2*int(wy)+pc.p3.w+int(q>>1u);
+        bool oob=(tx<0 || ty<0 || tx>=int(tiles_x) || ty>=int(tiles_y));
+        precise f16vec2 main_scaled=f16vec2(float16_t(0.0));
+        if(!oob) {
+            uint cx=uint(tx*4+int(sx))>>1u,cy=uint(ty*4+int(sy))>>1u;
+            uint ac=io_at(cx,cy,c,uint(pc.p7.x),32u);
+            main_scaled=f16vec2(coarse[ac],coarse[ac+1u]);
+            if(pc.p4.z!=0) main_scaled=main_scaled*main_gain;
+        }
+        for(uint k=0u;k<4u;++k) {
+            uint dx=(k&1u)^(group&1u),dy=k>>1u;
+            uint s=(sy+dy)*4u+sx+dx,t=q*16u+s;
+            f16vec2 value=f16vec2(float16_t(0.0));
+            if(!oob) {
+                uint px=uint(tx*4)+sx+dx,py=uint(ty*4)+sy+dy;
+                uint as=io_at(px,py,c,tiles_x*4u,32u);
+                precise f16vec2 skip_v=f16vec2(skipx[as],skipx[as+1u])*skip_gain;
+                precise f16vec2 blended=main_scaled+skip_v;
+                value=blended;
+            }
+            shX[t*32u+c]=value.x;
+            shX[t*32u+c+1u]=value.y;
+        }
+    }
+    barrier();
+    if (debug) {
+        for (uint e = t_local; e < 2048u; e += 256u) dbg[22528u + e] = shX[e];
+        if (t_local == 0u) {
+            dbg[24576u] = float16_t(float(wx));
+            dbg[24577u] = float16_t(float(wy));
+            dbg[24578u] = float16_t(float(pc.p3.y));
+            dbg[24579u] = float16_t(float(pc.p0.w));
+            dbg[24580u] = float16_t(float(pc.p3.x));
+        }
+        barrier();
+    }
+    if (debug) barrier(); // No normal-path cross-SG publication or reuse here.
+
+    // ============ stage 1: expand Mpair; same K and half epilogue ============
+    for (uint round = 0u; round < 2u; ++round) {
+        uint mA = (sg / 4u + 4u * round) * 8u;
+        uint mB = mA + 16u;
+        uint n0 = (sg % 4u) * 32u;
+        MAT_C accA0 = MAT_C(float16_t(0.0));
+        MAT_C accA1 = MAT_C(float16_t(0.0));
+        MAT_C accB0 = MAT_C(float16_t(0.0));
+        MAT_C accB1 = MAT_C(float16_t(0.0));
+        for (uint ki = 0u; ki < 2u; ++ki) {
+            uint k0 = ki * 16u;
+            MAT_B b0; coopMatLoad(b0, wb, uint(pc.p1.x) + ((n0) / 16u) * 512u + (k0 / 16u) * 256u, 16u, LCOL);
+            MAT_B b1; coopMatLoad(b1, wb, uint(pc.p1.x) + (((n0 + 16u)) / 16u) * 512u + (k0 / 16u) * 256u, 16u, LCOL);
+            {
+                MAT_A a; coopMatLoad(a, shX, mA * 32u + k0, 32u, LROW);
+                accA0 = coopMatMulAdd(a, b0, accA0);
+                accA1 = coopMatMulAdd(a, b1, accA1);
+            }
+            {
+                MAT_A a; coopMatLoad(a, shX, mB * 32u + k0, 32u, LROW);
+                accB0 = coopMatMulAdd(a, b0, accB0);
+                accB1 = coopMatMulAdd(a, b1, accB1);
+            }
+        }
+        {
+            MAT_H half_result = MAT_H(accA0);
+            if (debug) coopMatStore(half_result, dbg, mA * 128u + n0, 128u, LROW);
+            for (int component = 0; component < half_result.length(); ++component)
+                half_result[component] = nr_act_h(half_result[component]);
+            coopMatStore(half_result, shArena, mA * 128u + n0, 128u, LROW);
+        }
+        {
+            MAT_H half_result = MAT_H(accA1);
+            if (debug) coopMatStore(half_result, dbg, mA * 128u + n0 + 16u, 128u, LROW);
+            for (int component = 0; component < half_result.length(); ++component)
+                half_result[component] = nr_act_h(half_result[component]);
+            coopMatStore(half_result, shArena, mA * 128u + n0 + 16u, 128u, LROW);
+        }
+        {
+            MAT_H half_result = MAT_H(accB0);
+            if (debug) coopMatStore(half_result, dbg, mB * 128u + n0, 128u, LROW);
+            for (int component = 0; component < half_result.length(); ++component)
+                half_result[component] = nr_act_h(half_result[component]);
+            coopMatStore(half_result, shArena, mB * 128u + n0, 128u, LROW);
+        }
+        {
+            MAT_H half_result = MAT_H(accB1);
+            if (debug) coopMatStore(half_result, dbg, mB * 128u + n0 + 16u, 128u, LROW);
+            for (int component = 0; component < half_result.length(); ++component)
+                half_result[component] = nr_act_h(half_result[component]);
+            coopMatStore(half_result, shArena, mB * 128u + n0 + 16u, 128u, LROW);
+        }
+    }
+    barrier(); // Original publication to contract.
+
+    MAT_A handoff0, handoff1;
+    // ============ stage 3: contract Y[64,32] — B1 pair form ============
+    // Nc=2, Np=1: rows 8*sg, cols 0/16. Seed = H(X*rs); K loop 8.
+    {
+        uint m0 = sg * 8u;
+        // H(seed * scale) before the original K loop; no shared scratch.
+        MAT_C acc0;
+        {
+            MAT_H seed;
+            coopMatLoad(seed, shX, m0 * 32u + 0u, 32u, LROW);
+            MAT_H scale;
+            coopMatLoad(scale, wb, uint(pc.p2.x) + 8u + 0u, 0u, LROW);
+            seed = seed * scale;
+            acc0 = MAT_C(seed);
+        }
+        MAT_C acc1;
+        {
+            MAT_H seed;
+            coopMatLoad(seed, shX, m0 * 32u + 16u, 32u, LROW);
+            MAT_H scale;
+            coopMatLoad(scale, wb, uint(pc.p2.x) + 8u + 16u, 0u, LROW);
+            seed = seed * scale;
+            acc1 = MAT_C(seed);
+        }
+        for (uint ki = 0u; ki < 8u; ++ki) {
+            uint k0 = ki * 16u;
+            MAT_A a; coopMatLoad(a, shArena, m0 * 128u + k0, 128u, LROW);  // shared A
+            MAT_B b0; coopMatLoad(b0, wb, uint(pc.p1.y) + ((0u) / 16u) * 2048u + (k0 / 16u) * 256u, 16u, LCOL);
+            MAT_B b1; coopMatLoad(b1, wb, uint(pc.p1.y) + ((16u) / 16u) * 2048u + (k0 / 16u) * 256u, 16u, LCOL);
+            acc0 = coopMatMulAdd(a, b0, acc0);
+            acc1 = coopMatMulAdd(a, b1, acc1);
+        }
+        MAT_H half0 = MAT_H(acc0);
+        handoff0[0]=half0[0];
+        handoff0[1]=half0[1];
+        handoff0[2]=half0[2];
+        handoff0[3]=half0[3];
+
+        coopMatStore(half0, shY, m0 * 32u, 32u, LROW);
+        MAT_H half1 = MAT_H(acc1);
+        handoff1[0]=half1[0];
+        handoff1[1]=half1[1];
+        handoff1[2]=half1[2];
+        handoff1[3]=half1[3];
+
+        coopMatStore(half1, shY, m0 * 32u + 16u, 32u, LROW);
+    }
+    if (debug) {
+        barrier();
+        for (uint e = t_local; e < 2048u; e += 256u) dbg[8192u + e] = shY[e];
+        barrier();
+    }
+    barrier();
+
+    // ============ stage 4: QKV[64,96] — B1 pair form ============
+    // Nc=6, Np=3; j=0..2: p = sg+8j, r = p/3, b = p%3; n0 = 32b.
+    // Pairs: Q cols 0/16 (b=0), K cols 32/48 (b=1), V cols 64/80 (b=2).
+    for (uint step = 0u; step < 3u; ++step) {
+        uint j=2u-step; // V first, normalized K next, Q last.
+        uint m0=sg*8u, n0=j*32u;
+        MAT_C acc0 = MAT_C(float16_t(0.0));
+        MAT_C acc1 = MAT_C(float16_t(0.0));
+        for (uint ki = 0u; ki < 2u; ++ki) {
+            uint k0 = ki * 16u;
+            MAT_A a=handoff0; if(ki==1u) a=handoff1; // Same per-element K0 then K16.
+            MAT_B b0; coopMatLoad(b0, wb, uint(pc.p1.z) + ((n0) / 16u) * 512u + (k0 / 16u) * 256u, 16u, LCOL);
+            MAT_B b1; coopMatLoad(b1, wb, uint(pc.p1.z) + (((n0 + 16u)) / 16u) * 512u + (k0 / 16u) * 256u, 16u, LCOL);
+            acc0 = coopMatMulAdd(a, b0, acc0);
+            acc1 = coopMatMulAdd(a, b1, acc1);
+        }
+        uint region = n0 / 32u;
+        MAT_H half0 = MAT_H(acc0);
+        MAT_H half1 = MAT_H(acc1);
+        if(region<2u) {
+            float16_t sc=float16_t(fb[uint(pc.p2.z)]);
+            {
+                f16vec2 n=full_norm(half0[0],half1[0],half0[1],half1[1]);
+                {
+                    precise f16vec2 scaled=f16vec2(half0[0],half1[0])*f16vec2(n.x);
+                    if(region==0u) scaled=scaled*f16vec2(sc);
+                    half0[0]=scaled.x;half1[0]=scaled.y;
+                }
+                {
+                    precise f16vec2 scaled=f16vec2(half0[1],half1[1])*f16vec2(n.y);
+                    if(region==0u) scaled=scaled*f16vec2(sc);
+                    half0[1]=scaled.x;half1[1]=scaled.y;
+                }
+            }
+            {
+                f16vec2 n=full_norm(half0[2],half1[2],half0[3],half1[3]);
+                {
+                    precise f16vec2 scaled=f16vec2(half0[2],half1[2])*f16vec2(n.x);
+                    if(region==0u) scaled=scaled*f16vec2(sc);
+                    half0[2]=scaled.x;half1[2]=scaled.y;
+                }
+                {
+                    precise f16vec2 scaled=f16vec2(half0[3],half1[3])*f16vec2(n.y);
+                    if(region==0u) scaled=scaled*f16vec2(sc);
+                    half0[3]=scaled.x;half1[3]=scaled.y;
+                }
+            }
+        }
+        coopMatStore(half0, shArena, region*2048u+m0*32u,32u,LROW);
+        coopMatStore(half1, shArena, region*2048u+m0*32u+16u,32u,LROW);
+    }
+
+    if (debug) {
+        barrier();
+        for (uint e = t_local; e < 2048u; e += 256u) dbg[10240u + e] = NR_Q(e / 32u, e % 32u);
+        for (uint e = t_local; e < 2048u; e += 256u) dbg[12288u + e] = NR_K(e / 32u, e % 32u);
+        barrier();
+    }
+    barrier();
+
+    // ============ stage 6: score + bias/exp — B1 pair form ============
+    // Complete-query owner: 8 SG, each produces all four key tiles for its PV rows.
+    f16vec4 p_cache[4];
+    {
+    MAT_A score_q0,score_q1;
+    coopMatLoad(score_q0,shArena,sg*8u*32u,32u,LROW);
+    coopMatLoad(score_q1,shArena,sg*8u*32u+16u,32u,LROW);
+    for (uint j = 0u; j < 2u; ++j) {
+        uint m0 = sg * 8u;
+        uint n0 = j * 32u;
+        MAT_C acc0 = MAT_C(float16_t(0.0));
+        MAT_C acc1 = MAT_C(float16_t(0.0));
+        for (uint ki = 0u; ki < 2u; ++ki) {
+            uint k0 = ki * 16u;
+            MAT_A a=score_q0; if(ki==1u) a=score_q1; // original K0 then K16
+            MAT_B b0; coopMatLoad(b0, shArena, 2048u + n0 * 32u + k0, 32u, LCOL);  // K^T
+            MAT_B b1; coopMatLoad(b1, shArena, 2048u + (n0 + 16u) * 32u + k0, 32u, LCOL);
+            acc0 = coopMatMulAdd(a, b0, acc0);
+            acc1 = coopMatMulAdd(a, b1, acc1);
+        }
+        {
+            MAT_C bias;
+            coopMatLoad(bias, fb, uint(pc.p2.w) + m0 * 64u + n0, 64u, LROW);
+            for (int component = 0; component < acc0.length(); ++component) {
+                precise float biased = acc0[component] + bias[component];
+                acc0[component] = biased;
+            }
+            MAT_H half_score = MAT_H(acc0);
+            for (int component = 0; component < half_score.length(); ++component)
+                half_score[component] = nr_exp_h(half_score[component]);
+            p_cache[2u*j+0u]=f16vec4(half_score[0],half_score[1],half_score[2],half_score[3]);
+        }
+        {
+            MAT_C bias;
+            coopMatLoad(bias, fb, uint(pc.p2.w) + m0 * 64u + n0 + 16u, 64u, LROW);
+            for (int component = 0; component < acc1.length(); ++component) {
+                precise float biased = acc1[component] + bias[component];
+                acc1[component] = biased;
+            }
+            MAT_H half_score = MAT_H(acc1);
+            for (int component = 0; component < half_score.length(); ++component)
+                half_score[component] = nr_exp_h(half_score[component]);
+            p_cache[2u*j+1u]=f16vec4(half_score[0],half_score[1],half_score[2],half_score[3]);
+        }
+    }
+    } // Q and score accumulators retire; P remains for same-owner den/PV.
+
+    // Den is reduced in native PV-A ownership, without a P layout conversion.
+    float16_t pv_inv[4];
+    {
+        f16vec4 partial=f16vec4(float16_t(0.0));
+        for(uint j=0u;j<4u;++j){
+            MAT_A pa; for(int d=0;d<4;++d) pa[d]=p_cache[j][d];
+            vec2 b01=unpackHalf2x16(subgroupShuffleXor(packHalf2x16(vec2(float(pa[0]),float(pa[1]))),8u));
+            vec2 b23=unpackHalf2x16(subgroupShuffleXor(packHalf2x16(vec2(float(pa[2]),float(pa[3]))),8u));
+            f16vec4 peer=f16vec4(b01,b23);
+            if((lane&8u)==0u){
+                for(int d=0;d<4;++d){
+                    float16_t pair=p_cache[j][d]+peer[d];
+                    partial[d]=partial[d]+pair;
+                }
+            }
+        }
+        {
+            vec2 b01=unpackHalf2x16(subgroupShuffleXor(packHalf2x16(vec2(float(partial[0]),float(partial[1]))),2u));
+            vec2 b23=unpackHalf2x16(subgroupShuffleXor(packHalf2x16(vec2(float(partial[2]),float(partial[3]))),2u));
+            f16vec4 peer=f16vec4(b01,b23);
+            if((lane&10u)==0u) for(int d=0;d<4;++d) partial[d]=partial[d]+peer[d];
+        }
+        {
+            vec2 b01=unpackHalf2x16(subgroupShuffleXor(packHalf2x16(vec2(float(partial[0]),float(partial[1]))),4u));
+            vec2 b23=unpackHalf2x16(subgroupShuffleXor(packHalf2x16(vec2(float(partial[2]),float(partial[3]))),4u));
+            f16vec4 peer=f16vec4(b01,b23);
+            if((lane&14u)==0u) for(int d=0;d<4;++d) partial[d]=partial[d]+peer[d];
+        }
+        {
+            vec2 b01=unpackHalf2x16(subgroupShuffleXor(packHalf2x16(vec2(float(partial[0]),float(partial[1]))),1u));
+            vec2 b23=unpackHalf2x16(subgroupShuffleXor(packHalf2x16(vec2(float(partial[2]),float(partial[3]))),1u));
+            f16vec4 peer=f16vec4(b01,b23);
+            if((lane&15u)==0u) for(int d=0;d<4;++d) partial[d]=partial[d]+peer[d];
+        }
+        f16vec4 inv=f16vec4(float16_t(0.0));
+        if((lane&15u)==0u) for(int d=0;d<4;++d)
+            inv[d]=float16_t(1.0/max(float(partial[d]),6.103515625e-05));
+        vec2 i01=unpackHalf2x16(subgroupShuffle(packHalf2x16(vec2(float(inv[0]),float(inv[1]))),lane&16u));
+        vec2 i23=unpackHalf2x16(subgroupShuffle(packHalf2x16(vec2(float(inv[2]),float(inv[3]))),lane&16u));
+        pv_inv[0]=float16_t(i01.x);pv_inv[1]=float16_t(i01.y);
+        pv_inv[2]=float16_t(i23.x);pv_inv[3]=float16_t(i23.y);
+    }
+
+    // ============ stage 8: context T[64,32] = P*V — B1 pair form ============
+    // Nc=2, Np=1: rows 8*sg, cols 0/16. K=64 (4 rounds). A = P rows shared;
+    // V is row-major B at n0 / n0+16.
+    // S37-CONTEXT-A: the two H(C) fragments stay live in registers from H(C)
+    // through the projection K loop. Their shared NR_CTX publication is now
+    // debug-only; the debug T dump below still reads NR_CTX unchanged.
+    MAT_H ctx_half0;
+    MAT_H ctx_half1;
+    {
+        uint m0 = sg * 8u;
+        MAT_C acc0 = MAT_C(float16_t(0.0));
+        MAT_C acc1 = MAT_C(float16_t(0.0));
+        for (uint ki = 0u; ki < 4u; ++ki) {
+            uint k0 = ki * 16u;
+            MAT_A a; for(int d=0;d<4;++d) a[d]=p_cache[ki][d]; // Same lane/component; no P shuffle.
+            a[0] = a[0] * pv_inv[0];
+            a[1] = a[1] * pv_inv[1];
+            a[2] = a[2] * pv_inv[2];
+            a[3] = a[3] * pv_inv[3];
+            if (debug) coopMatStore(a,dbg,14336u+m0*64u+k0,64u,LROW);
+            MAT_B b0; coopMatLoad(b0, shArena, 4096u + k0 * 32u + 0u, 32u, LROW);
+            MAT_B b1; coopMatLoad(b1, shArena, 4096u + k0 * 32u + 16u, 32u, LROW);
+            acc0 = coopMatMulAdd(a, b0, acc0);
+            acc1 = coopMatMulAdd(a, b1, acc1);
+        }
+        ctx_half0 = MAT_H(acc0);
+        if (debug) coopMatStore(ctx_half0, shArena, 6144u + m0 * 32u, 32u, LROW);
+        ctx_half1 = MAT_H(acc1);
+        if (debug) coopMatStore(ctx_half1, shArena, 6144u + m0 * 32u + 16u, 32u, LROW);
+    }
+    if (debug) {
+        barrier();
+        for (uint e = t_local; e < 2048u; e += 256u) dbg[18432u + e] = NR_CTX(e / 32u, e % 32u);
+        barrier();
+    }
+    if (debug) barrier(); // No normal-path cross-SG publication or reuse here.
+
+    // ============ stage 9: projection O[64,32] + ars seed — B1 pair form =====
+    // Nc=2, Np=1: rows 8*sg, cols 0/16. Seed = H(Y*ars). K loop 2.
+    // Both results written to the shX O staging (guide §5 item 5).
+    {
+        uint m0 = sg * 8u;
+        // H(seed * scale) before the original K loop; no shared scratch.
+        MAT_C acc0;
+        {
+            MAT_H seed;
+            coopMatLoad(seed, shY, m0 * 32u + 0u, 32u, LROW);
+            MAT_H scale;
+            coopMatLoad(scale, wb, uint(pc.p2.y) + 0u, 0u, LROW);
+            seed = seed * scale;
+            acc0 = MAT_C(seed);
+        }
+        MAT_C acc1;
+        {
+            MAT_H seed;
+            coopMatLoad(seed, shY, m0 * 32u + 16u, 32u, LROW);
+            MAT_H scale;
+            coopMatLoad(scale, wb, uint(pc.p2.y) + 16u, 0u, LROW);
+            seed = seed * scale;
+            acc1 = MAT_C(seed);
+        }
+        // S37-CONTEXT-A: same two K blocks in the original K0, K16 order; A is
+        // the retained context half fragment, component-wise (identical A/CH
+        // component map, so transport only - no shuffle, pack or new load).
+        {
+            MAT_A a = MAT_A(float16_t(0.0));
+            a[0] = ctx_half0[0];
+            a[1] = ctx_half0[1];
+            a[2] = ctx_half0[2];
+            a[3] = ctx_half0[3];
+            MAT_B b0; coopMatLoad(b0, wb, uint(pc.p1.w) + ((0u) / 16u) * 512u + (0u / 16u) * 256u, 16u, LCOL);
+            MAT_B b1; coopMatLoad(b1, wb, uint(pc.p1.w) + ((16u) / 16u) * 512u + (0u / 16u) * 256u, 16u, LCOL);
+            acc0 = coopMatMulAdd(a, b0, acc0);
+            acc1 = coopMatMulAdd(a, b1, acc1);
+        }
+        {
+            MAT_A a = MAT_A(float16_t(0.0));
+            a[0] = ctx_half1[0];
+            a[1] = ctx_half1[1];
+            a[2] = ctx_half1[2];
+            a[3] = ctx_half1[3];
+            MAT_B b0; coopMatLoad(b0, wb, uint(pc.p1.w) + ((0u) / 16u) * 512u + (16u / 16u) * 256u, 16u, LCOL);
+            MAT_B b1; coopMatLoad(b1, wb, uint(pc.p1.w) + ((16u) / 16u) * 512u + (16u / 16u) * 256u, 16u, LCOL);
+            acc0 = coopMatMulAdd(a, b0, acc0);
+            acc1 = coopMatMulAdd(a, b1, acc1);
+        }
+
+        MAT_H half0 = MAT_H(acc0);
+        coopMatStore(half0, shX, m0 * 32u, 32u, LROW);
+        bool oob0;
+        uint base0 = nr_tok_addr(m0, 0u, wx, wy, shift, tiles_x, oob0);
+
+        MAT_H half1 = MAT_H(acc1);
+        coopMatStore(half1, shX, m0 * 32u + 16u, 32u, LROW);
+        bool oob1;
+        uint base1 = nr_tok_addr(m0, 16u, wx, wy, shift, tiles_x, oob1);
+
+    }
+    barrier(); // stage9 producer rows cross SG boundaries before pixel-owner tail.
+    if(sg<2u) {
+        uint t=sg*32u+lane,q=t/16u,r=t%16u;
+        int px=(2*int(wx)+shift+int(q&1u))*4+int(r%4u);
+        int py=(2*int(wy)+pc.p3.w+int(q>>1u))*4+int(r/4u);
+        if(px>=0 && px<1280 && py>=0 && py<720) {
+            vec4 value=boundary_project(t);
+            uint address=(uint(py)*1280u+uint(px))*4u;
+            residual_out[address]=value.x;residual_out[address+1u]=value.y;
+            residual_out[address+2u]=value.z;residual_out[address+3u]=value.w;
+        }
+    }
+    // Debug O continues to read the same rounded half values from shX.
+    if (debug) barrier();
+    if (debug) {
+        barrier();
+        for (uint e = t_local; e < 2048u; e += 256u) dbg[20480u + e] = shX[e];
+    }
+}

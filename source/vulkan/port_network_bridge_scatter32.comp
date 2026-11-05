@@ -1,0 +1,226 @@
+#version 450
+layout(local_size_x=256) in;
+layout(set=0,binding=0,std430) readonly buffer Application { float application[]; };
+layout(set=0,binding=1,rgba32f) uniform writeonly image2D output_image;
+layout(set=0,binding=2,std430) readonly buffer InputCopy { float input_copy[]; };
+layout(set=0,binding=3) uniform sampler2D color_source;
+layout(set=0,binding=4,std430) readonly buffer BasePlane { float base_plane[]; };
+layout(push_constant) uniform Push { uvec4 base_size; uvec4 grid_size; uvec4 active_size; uvec4 hdr; uvec4 colour_base; uvec4 tune; } pc;
+// Same HDR unframing as scatter.comp, for the RGBA32F output slot.
+vec3 srgb_dec(vec3 v) {
+    v = clamp(v, 0.0, 1.0);
+    return mix(v / 12.92, pow((v + 0.055) / 1.055, vec3(2.4)), step(0.04045, v));
+}
+vec3 neutral(vec3 c) {
+    const float start = 0.76, d = 0.24, desat = 0.15;
+    const float peak = max(c.r, max(c.g, c.b));
+    if (peak < start) return c;
+    const float np = 1.0 - d * d / (peak + d - start);
+    c *= np / peak;
+    const float g = 1.0 - 1.0 / (desat * (peak - np) + 1.0);
+    return mix(c, vec3(np), g);
+}
+vec3 srgb_enc(vec3 v) {
+    v = clamp(v, 0.0, 1.0);
+    return mix(v * 12.92, 1.055 * pow(max(v, vec3(1e-8)), vec3(1.0 / 2.4)) - 0.055, step(0.0031308, v));
+}
+vec3 neutral_inv(vec3 y) {
+    const float start = 0.76, d = 0.24, desat = 0.15;
+    const float np = max(y.r, max(y.g, y.b));
+    if (np < start) return y;
+    const float peak = d * d / max(1.0 - np, 1e-6) - d + start;
+    const float g = 1.0 - 1.0 / (desat * (peak - np) + 1.0);
+    return (y - g * np) / (1.0 - g) * (peak / np);
+}
+vec4 answer_at(ivec2 q) {
+    uint adr=(uint(q.y)*pc.grid_size.z+uint(q.x))*4u;
+    return vec4(application[adr],application[adr+1u],application[adr+2u],application[adr+3u]);
+}
+vec3 base_at(ivec2 q) {
+    uint adr=(uint(q.y)*pc.grid_size.z+uint(q.x))*4u;
+    return vec3(base_plane[adr],base_plane[adr+1u],base_plane[adr+2u]);
+}
+vec3 decode_answer(vec3 v,float gain) {
+    if(gain<=0.0) return v;
+    return clamp(neutral_inv(srgb_dec(min(v,vec3(0.995))))/gain,vec3(0.0),vec3(1e4));
+}
+// RCAS, the FFX FSR1 sharpen: a 5-tap cross whose correction is a *negative-only* lobe that
+// shrinks as the local contrast rises. Flat areas keep most of the sharpening, hard edges get
+// almost none. Returns the delta to add, not the filtered value, so the network's edit in
+// c.rgb survives untouched. Same maths as scatter.comp:941; keep the two in step.
+vec3 rcas_delta(ivec2 bxy,ivec2 c0,ivec2 hi,float strength) {
+    const vec3 e=texelFetch(color_source,bxy+c0,0).rgb;
+    const vec3 b=texelFetch(color_source,bxy+max(c0-ivec2(0,1),ivec2(0)),0).rgb;
+    const vec3 h=texelFetch(color_source,bxy+min(c0+ivec2(0,1),hi),0).rgb;
+    const vec3 d=texelFetch(color_source,bxy+max(c0-ivec2(1,0),ivec2(0)),0).rgb;
+    const vec3 f=texelFetch(color_source,bxy+min(c0+ivec2(1,0),hi),0).rgb;
+    const vec3 sum4=b+h+d+f;
+    const vec3 mn4=min(min(b,d),min(f,h));
+    const vec3 mx4=max(max(b,d),max(f,h));
+    const vec3 hit_min=min(mn4,e)/(4.0*mx4+1e-5);
+    const vec3 hit_max=(1.0-max(mx4,e))/(4.0*mn4-4.0-1e-5);
+    // -0.2499, not -0.25: a perfectly flat centre drives 4*lobe+1 to exactly zero.
+    vec3 lobe=clamp(max(-hit_min,hit_max),vec3(-0.2499),vec3(0.0));
+    const vec3 nz=clamp(abs(0.25*sum4-e)/(mx4-mn4+1e-5),vec3(0.0),vec3(1.0));
+    lobe*=(1.0-0.5*nz)*strength;
+    return (lobe*sum4+e)/(4.0*lobe+1.0)-e;
+}
+// Adaptive output: the output slot is render-sized. tune.y selects between publishing the
+// answer whole (nearest, exact when the canvas is the frame) and publishing only its edit over
+// the frame's own texel (detail-preserving when the network ran below render resolution).
+void main() {
+    uint i=gl_GlobalInvocationID.x;
+    if(i>=pc.base_size.z*pc.base_size.w)return;
+    ivec2 local=ivec2(i%pc.base_size.z,i/pc.base_size.z);
+    const vec2 a=vec2(max(pc.active_size.xy,uvec2(1u)));
+    const ivec2 o=ivec2(pc.active_size.zw);
+    const vec2 rs=vec2(max(pc.base_size.zw,uvec2(1u)));
+    const bool delta=pc.tune.y!=0u;
+
+    vec4 c;
+    vec3 base=vec3(0.0), full=vec3(0.0);
+    // Low-frequency part of the edit, measured on the *canvas* grid. The publish weights this
+    // against the rest so the model's tone shift and its texture can be dialled separately.
+    vec3 low_a=vec3(0.0), low_b=vec3(0.0);
+    ivec2 su=ivec2(0);
+    if(delta) {
+        vec2 cp=clamp((vec2(local)+0.5f)*a/rs-0.5f,vec2(0.0f),a-1.0f);
+        vec2 fl=floor(cp),f=cp-fl;
+        ivec2 q0=ivec2(fl),q1=min(q0+1,ivec2(a)-1);
+        ivec2 hiq=ivec2(a)-1;
+        ivec2 h0=q0+o,h1=q1+o;
+        vec3 b00=base_at(q0),b10=base_at(ivec2(q1.x,q0.y));
+        vec3 b01=base_at(ivec2(q0.x,q1.y)),b11=base_at(q1);
+        vec4 c00=answer_at(h0),c10=answer_at(ivec2(h1.x,h0.y));
+        vec4 c01=answer_at(ivec2(h0.x,h1.y)),c11=answer_at(h1);
+        if(pc.tune.z!=0u){
+            // EASU (FSR1's edge-directed upscale) on the *edit*, not on the answer. The edit is a
+            // difference of two linear samples, so weighting both by the same kernel and
+            // subtracting afterwards equals upscaling the difference directly - and it keeps the
+            // cheap 4-tap corner read for the edge direction.
+            //
+            // Why: a bilinear enlarge of the 1024-wide edit loses its own high frequency exactly
+            // the way replacing the frame did; the frame stays 1:1 here, only the edit is enlarged.
+            const vec3 kLumaE=vec3(0.2126,0.7152,0.0722);
+            float e00=dot(c00.rgb-b00,kLumaE),e10=dot(c10.rgb-b10,kLumaE);
+            float e01=dot(c01.rgb-b01,kLumaE),e11=dot(c11.rgb-b11,kLumaE);
+            float gx=(e10+e11)-(e00+e01);
+            float gy=(e01+e11)-(e00+e10);
+            vec2 edir=normalize(vec2(-gy,gx)+vec2(1e-5));
+            vec2 eper=vec2(-edir.y,edir.x);
+            const float kAlongE=1.0/(1.6*1.6),kAcrossE=1.0;   // reach further along the edge
+            vec3 sumA=vec3(0.0),sumB=vec3(0.0);
+            float wsum=0.0;
+            for(int j=-1;j<=2;++j){
+                for(int i=-1;i<=2;++i){
+                    vec2 d=vec2(float(i),float(j))-f;
+                    float pa=dot(d,edir),pb=dot(d,eper);
+                    float w=exp(-(pa*pa*kAlongE+pb*pb*kAcrossE)*2.0);
+                    ivec2 q=clamp(q0+ivec2(i,j),ivec2(0),hiq);
+                    sumA+=answer_at(q+o).rgb*w;
+                    sumB+=base_at(q)*w;
+                    wsum+=w;
+                }
+            }
+            // Anti-ringing against the four nearest taps: an edge-directed kernel may overshoot.
+            c.rgb=clamp(sumA/max(wsum,1e-5),min(min(c00.rgb,c10.rgb),min(c01.rgb,c11.rgb)),
+                                            max(max(c00.rgb,c10.rgb),max(c01.rgb,c11.rgb)));
+            low_a=sumA/max(wsum,1e-5);low_b=sumB/max(wsum,1e-5);
+            base=clamp(sumB/max(wsum,1e-5),min(min(b00,b10),min(b01,b11)),
+                                            max(max(b00,b10),max(b01,b11)));
+        } else {
+            c=mix(mix(c00,c10,f.x),mix(c01,c11,f.x),f.y);
+            base=mix(mix(b00,b10,f.x),mix(b01,b11,f.x),f.y);
+            low_a=(c00.rgb+c10.rgb+c01.rgb+c11.rgb)*0.25;low_b=(b00+b10+b01+b11)*0.25;
+        }
+        full=texelFetch(color_source,ivec2(pc.colour_base.xy)+local,0).rgb;
+        su=q0+o;
+    } else {
+        uvec2 lp=min(uvec2((vec2(local)+0.5f)*a/rs),uvec2(a)-1u);
+        su=ivec2(lp)+o;
+        c=answer_at(su);
+    }
+
+    vec3 ans=c.rgb;
+    // Composition, mirroring OptiScaler DLSS-NR's resolve as AMD implement it
+    // (windows/shaders/passes/runtime_transfer.comp): Detail strength 0..2 (above 1 is a power on the
+    // luminance ratio), Colour strength 0..4 (above 1 scales chroma), Highlight guard 1..8 (bounds the
+    // ratio both ways). At 1/1 with a denoiser-sized edit this is exactly the model's answer.
+    const float detail=uintBitsToFloat(pc.hdr.y), colour=uintBitsToFloat(pc.hdr.z);
+    const float guard=max(uintBitsToFloat(pc.hdr.w),1.0);   // hdr.w: Highlight guard, 1..8
+    if(detail!=1.0||colour!=1.0) {
+        // The frame as the model saw it: rebuilt from the source texel with the same bilinear
+        // mapping and the same HDR shaping gather applied. The ioport planes cannot serve here --
+        // they are in-place scratch, finished by the last port pass.
+        if(!delta) {
+            const vec2 g=a;
+            const vec2 ssz=vec2(max(pc.colour_base.zw,uvec2(1u)));
+            const vec2 pos=(vec2(su-o)+0.5f)*ssz/g-0.5f;
+            const ivec2 b0=clamp(ivec2(floor(pos)),ivec2(0),ivec2(ssz-1.0f));
+            const ivec2 b1=clamp(b0+1,ivec2(0),ivec2(ssz-1.0f));
+            const vec2 f=fract(pos);
+            const ivec2 bxy=ivec2(pc.colour_base.xy);
+            const vec4 s00=texelFetch(color_source,bxy+b0,0);
+            const vec4 s10=texelFetch(color_source,bxy+ivec2(b1.x,b0.y),0);
+            const vec4 s01=texelFetch(color_source,bxy+ivec2(b0.x,b1.y),0);
+            const vec4 s11=texelFetch(color_source,bxy+b1,0);
+            base=mix(mix(s00,s10,f.x),mix(s01,s11,f.x),f.y).rgb;
+            const float hg0=uintBitsToFloat(pc.hdr.x);
+            if(hg0>0.0) base=srgb_enc(neutral(max(base,vec3(0.0))*hg0));
+        }
+        const vec3 kLuma=vec3(0.2126,0.7152,0.0722), kFloor=vec3(1.0/512.0);
+        const vec3 orig=base;
+        const float ol=dot(orig,kLuma);
+        vec3 up=mix(orig,ans,clamp(detail,0.0,1.0));
+        const float lr=(dot(up,kLuma)+1.0/512.0)/(ol+1.0/512.0);
+        const float amplified=detail>1.0?pow(max(lr,1e-6),detail):lr;
+        const float bounded=clamp(amplified,1.0/guard,guard);
+        up*=bounded/max(lr,1e-6);
+        vec3 answer=mix(orig*bounded,up,clamp(colour,0.0,1.0));
+        if(colour>1.0) answer=max(mix(vec3(dot(answer,kLuma)),answer,colour),vec3(0.0));
+        ans=answer;
+    }
+    const float hdr_gain=uintBitsToFloat(pc.hdr.x);
+    if(delta) {
+        // Edit composition in frame units: the curve is not linear, so both sides are decoded
+        // before the subtraction.
+        vec3 edit=decode_answer(ans,hdr_gain)-decode_answer(base,hdr_gain);
+        // tone/texture: 1/1 is the historic behaviour (publish the whole edit). tone=0 keeps
+        // only what the model changed above the canvas-scale mean, which drops its global
+        // tone shift (-5.9/-3.9/-0.1 in the captured frame) and keeps the +12% high band.
+        float tone_w=float(pc.tune.w&0xFFFFu)/255.0;
+        float tex_w =float((pc.tune.w>>16)&0xFFFFu)/255.0;
+        if(tone_w!=1.0||tex_w!=1.0){
+            vec3 e_low=decode_answer(low_a,hdr_gain)-decode_answer(low_b,hdr_gain);
+            edit=tone_w*e_low+tex_w*(edit-e_low);
+        }
+        c.rgb=full+edit;
+    } else {
+        c.rgb=decode_answer(ans,hdr_gain);
+    }
+    // Acutance: put back the high-frequency the network (and the upscaler) took away. The source
+    // texel is where that detail still lives, so the high-pass is taken from it and added on top;
+    // 1.0 is roughly "all of it back", 0 is off. Outside the active rect this has no effect.
+    //
+    // pc.tune.x      fixed-weight high-pass (historic)
+    // pc.grid_size.x RCAS strength 0..1 (0 = off; edge-aware, see rcas_delta)
+    const float acut=uintBitsToFloat(pc.tune.x);
+    const float rcas=uintBitsToFloat(pc.grid_size.x);
+    if(acut>0.0||rcas>0.0) {
+        const ivec2 hi=ivec2(max(pc.colour_base.zw,uvec2(1u)))-1;
+        const ivec2 bxy=ivec2(pc.colour_base.xy);
+        const ivec2 c0=delta?clamp(local,ivec2(0),hi):clamp(su,ivec2(0),hi);
+        if(acut>0.0) {
+            const vec3 rc=texelFetch(color_source,bxy+c0,0).rgb;
+            const vec3 nb=(texelFetch(color_source,bxy+min(c0+ivec2(1,0),hi),0).rgb
+                          +texelFetch(color_source,bxy+max(c0-ivec2(1,0),ivec2(0)),0).rgb
+                          +texelFetch(color_source,bxy+min(c0+ivec2(0,1),hi),0).rgb
+                          +texelFetch(color_source,bxy+max(c0-ivec2(0,1),ivec2(0)),0).rgb)*0.25;
+            c.rgb+=(rc-nb)*acut;
+        }
+        if(rcas>0.0) c.rgb+=rcas_delta(bxy,c0,hi,rcas);
+    }
+
+    ivec2 xy=local+ivec2(pc.base_size.xy);
+    imageStore(output_image,xy,c);
+}

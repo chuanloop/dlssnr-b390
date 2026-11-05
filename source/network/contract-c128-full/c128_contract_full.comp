@@ -1,0 +1,120 @@
+// Full contract transport:existing Mpair;new WCtileB/cooperative half seed;original K/rounding.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 256) in;
+#include "b3_03_swin_c128_d2_common.glsl"
+
+layout(set = 0, binding = 5) buffer MBuf { float16_t gM[]; };
+layout(set = 0, binding = 6) buffer YBuf { float16_t gY[]; };
+
+#define MAT_H coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>
+
+void main() {
+    const uint t_local = gl_LocalInvocationID.x;
+    const uint sg = t_local / 32u;
+    const uint lane = t_local % 32u;
+    const uint wx = (pc.p1.z != 0) ? uint(pc.p2.x) : gl_WorkGroupID.x;
+    const uint wy = (pc.p1.z != 0) ? uint(pc.p2.y) : gl_WorkGroupID.y;
+    const uint w = wy * uint(pc.p1.x) + wx;
+    const bool debug = pc.p1.w != 0;
+    const uint rs = uint(pc.p4.y);   // valid rs halves (base already +8)
+
+    const uint wc = uint(pc.p3.z);
+    for (uint r = 0u; r < 2u; ++r) {
+        uint mA = (sg / 4u + 4u * r) * 8u;
+        uint mB = mA + 16u;
+        uint n0 = (sg % 4u) * 32u;
+        const uint bbase0 = wc + (n0 / 16u) * 2048u;
+        const uint bbase1 = wc + ((n0 + 16u) / 16u) * 2048u;
+        const uint abaseA = (w * 64u + mA) * 128u;
+        const uint abaseB = (w * 64u + mB) * 128u;
+        MAT_C accA0;
+        {
+            bool oob;
+            uint addr = c128_img_half_index(mA, n0, wx, wy, oob);
+            MAT_H seed;
+            if (oob) seed = MAT_H(float16_t(0.0));
+            else coopMatLoad(seed, imgin, addr, 16u, LROW);
+            MAT_H scale;
+            coopMatLoad(scale, pack, rs + n0, 0u, LROW);
+            seed = seed * scale;
+            accA0 = MAT_C(seed);
+        }
+        MAT_C accA1;
+        {
+            bool oob;
+            uint addr = c128_img_half_index(mA, (n0 + 16u), wx, wy, oob);
+            MAT_H seed;
+            if (oob) seed = MAT_H(float16_t(0.0));
+            else coopMatLoad(seed, imgin, addr, 16u, LROW);
+            MAT_H scale;
+            coopMatLoad(scale, pack, rs + (n0 + 16u), 0u, LROW);
+            seed = seed * scale;
+            accA1 = MAT_C(seed);
+        }
+        MAT_C accB0;
+        {
+            bool oob;
+            uint addr = c128_img_half_index(mB, n0, wx, wy, oob);
+            MAT_H seed;
+            if (oob) seed = MAT_H(float16_t(0.0));
+            else coopMatLoad(seed, imgin, addr, 16u, LROW);
+            MAT_H scale;
+            coopMatLoad(scale, pack, rs + n0, 0u, LROW);
+            seed = seed * scale;
+            accB0 = MAT_C(seed);
+        }
+        MAT_C accB1;
+        {
+            bool oob;
+            uint addr = c128_img_half_index(mB, (n0 + 16u), wx, wy, oob);
+            MAT_H seed;
+            if (oob) seed = MAT_H(float16_t(0.0));
+            else coopMatLoad(seed, imgin, addr, 16u, LROW);
+            MAT_H scale;
+            coopMatLoad(scale, pack, rs + (n0 + 16u), 0u, LROW);
+            seed = seed * scale;
+            accB1 = MAT_C(seed);
+        }
+        for (uint ki = 0u; ki < 8u; ++ki) {
+            uint k0 = ki * 16u;
+            MAT_B wb0; coopMatLoad(wb0, pack, bbase0 + ki * 256u, 16u, LCOL);
+            MAT_B wb1; coopMatLoad(wb1, pack, bbase1 + ki * 256u, 16u, LCOL);
+            MAT_A a; coopMatLoad(a, gM, abaseA + k0, 128u, LROW);
+            accA0 = coopMatMulAdd(a, wb0, accA0);
+            accA1 = coopMatMulAdd(a, wb1, accA1);
+            coopMatLoad(a, gM, abaseB + k0, 128u, LROW);
+            accB0 = coopMatMulAdd(a, wb0, accB0);
+            accB1 = coopMatMulAdd(a, wb1, accB1);
+        }
+        {
+            MAT_H narrowed = MAT_H(accA0);
+            coopMatStore(narrowed, gY, (w * 64u + mA) * 128u + n0, 128u, LROW);
+            if (debug)
+                coopMatStore(narrowed, dbg, 81920u + mA * 128u + n0, 128u, LROW);
+        }
+        {
+            MAT_H narrowed = MAT_H(accA1);
+            coopMatStore(narrowed, gY, (w * 64u + mA) * 128u + (n0 + 16u), 128u, LROW);
+            if (debug)
+                coopMatStore(narrowed, dbg, 81920u + mA * 128u + (n0 + 16u), 128u, LROW);
+        }
+        {
+            MAT_H narrowed = MAT_H(accB0);
+            coopMatStore(narrowed, gY, (w * 64u + mB) * 128u + n0, 128u, LROW);
+            if (debug)
+                coopMatStore(narrowed, dbg, 81920u + mB * 128u + n0, 128u, LROW);
+        }
+        {
+            MAT_H narrowed = MAT_H(accB1);
+            coopMatStore(narrowed, gY, (w * 64u + mB) * 128u + (n0 + 16u), 128u, LROW);
+            if (debug)
+                coopMatStore(narrowed, dbg, 81920u + mB * 128u + (n0 + 16u), 128u, LROW);
+        }
+    }
+}

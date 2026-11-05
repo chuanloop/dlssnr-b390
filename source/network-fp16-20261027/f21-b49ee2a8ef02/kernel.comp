@@ -1,0 +1,38 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#include "ioport_common.glsl"
+#include "ioport_images.glsl"
+layout(local_size_x=32) in;
+layout(set=0,binding=0,std430) readonly buffer ProjectionPairs { f16vec2 wp[]; };
+layout(set=0,binding=2,std430) readonly buffer FeaturePairs { float residual_in[]; };
+
+void main() {
+    uint i=gl_GlobalInvocationID.x,W=pc.p0.z,H=pc.p0.w;
+    if(i>=W*H)return;
+    uint px=i%W,py=i/W;
+    // The image tail preserves AMD's scalar FP32 accumulation in channel order.
+    // The projection is FP16[16,32]; live rows 0..2 residual, row3 blend logit.
+    vec4 residual=vec4(residual_in[i*4u],residual_in[i*4u+1u],residual_in[i*4u+2u],residual_in[i*4u+3u]);
+    vec4 base=rgba(pc.p7.x,pc.p5.x,pc.p5.y,ivec2(px,py));
+    vec3 rgb=clamp(base.rgb+residual.rgb*0.25,vec3(0),vec3(1));
+    float blend=0.0;
+    if(ctl(8)!=0.0) {
+        vec2 uv=(vec2(px,py)+0.5)/vec2(pc.p5.xy);
+        vec3 hist=history5((uv+motion_uv(uv))*vec2(ctl(9),ctl(10)));
+        float history_param=ctl(19)*float(tmp[pc.p7.w]);
+        blend=clamp(1.0/(1.0+exp(-residual.w))*clamp(history_param,0.0,1.0),0.0,1.0);
+        rgb=mix(rgb,hist,blend);
+    }
+    uint history_offset=pc.p7.y;
+    surface[history_offset+i*4u]=rgb.x;surface[history_offset+i*4u+1u]=rgb.y;
+    surface[history_offset+i*4u+2u]=rgb.z;surface[history_offset+i*4u+3u]=blend;
+    rgb=clamp(fma(vec3(min(ctl(7),1.0)),rgb-base.rgb,base.rgb),vec3(0),vec3(1));
+    if(ctl(7)>1.0) {
+        vec3 luma=vec3(0.2126,0.7152,0.0722);
+        float ratio=(dot(rgb,luma)+1.0/512.0)/(dot(base.rgb,luma)+1.0/512.0);
+        float amp=clamp(pow(max(ratio,1e-6),ctl(7)),0.5,2.0);
+        rgb=clamp(rgb*(amp/max(ratio,1e-6)),vec3(0),vec3(1));
+    }
+    surface[i*4u]=rgb.x;surface[i*4u+1u]=rgb.y;surface[i*4u+2u]=rgb.z;
+    surface[i*4u+3u]=(pc.p5.w&1u)!=0u?base.a:1.0;
+}

@@ -1,0 +1,178 @@
+// C64 complete D4: direct T/Y seed + M-pair + WO tileB; existing half image/debug tail.
+// n06b-f06-c64 candidate: 1x4 M/N register blocking. One A tile (8x16, 256 B) is loaded
+// once per k step and consumed by four DPAS (one per 16-channel n-block), so
+//   - the A read count per subgroup drops from 8 tiles to 4 (the same A tile is no
+//     longer loaded by both n-half subgroups of the same M-pair),
+//   - the four narrowed output tiles of one subgroup complete one contiguous 1024-half
+//     image block (same (tx,ty) tile, c/16 = 0..3, s = m&15 .. +7),
+//   - the weight n-block index is the literal 0..3 and the seed/scale index is 16*j.
+// Per-output K accumulation order, seed-before-K math, half rounding points, store domain,
+// grid and bindings are unchanged.
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+
+layout(local_size_x = 256) in;
+// diagnostics: NR_D4_SEED_ONLY / NR_D4_MMA_ONLY isolate the two O components
+#ifndef NR_D4_MODE
+#define NR_D4_MODE 0   // 0 = full, 1 = seed only, 2 = mma only
+#endif
+#include "c64_ffn_opt_common.glsl"
+// e4m3 rounding of a stored swin intermediate / block output.
+// `layers/swin.py`: every stored result goes through `store(x) = q8(_f16(x))`, and
+// `swin_block` returns `q8(wide)` for the layer's output. The three fused stages of
+// a swin block write exactly one of these buffers each -- f04 the MLP/attention
+// intermediate (Y), f05 the per-window tensor (T), f02/f06 the block output -- so the
+// rounding goes on the narrowed value just before its store.
+// NR_QUANT_E4M3=0 restores f16-only.
+#ifndef NR_QUANT_E4M3
+#define NR_QUANT_E4M3 1
+#endif
+#include "e4m3.glsl"
+
+layout(set = 0, binding = 6) buffer YBuf { float16_t gY[]; };
+layout(set = 0, binding = 7) buffer TBuf { float16_t gT[]; };
+
+#define MAT_H coopmat<float16_t, gl_ScopeSubgroup, 8, 16, gl_MatrixUseAccumulator>
+
+void main() {
+    const uint t_local = gl_LocalInvocationID.x;
+    const uint sg = gl_SubgroupID;
+    const uint lane = gl_SubgroupInvocationID;
+    const uint wx = (pc.p1.z != 0) ? uint(pc.p2.x) : gl_WorkGroupID.x;
+    const uint wy = (pc.p1.z != 0) ? uint(pc.p2.y) : gl_WorkGroupID.y;
+    const uint w = wy * uint(pc.p1.x) + wx;
+    const bool debug = pc.p1.w != 0;
+    const uint wo = uint(pc.p4.x);
+    const uint ars = uint(pc.p4.z);   // p4.y is rs (used by D2) — ars is p4.z
+
+    if (debug) {
+        // Echo the same canonical producer values; these storage regions were live.
+        for (uint e=t_local;e<4096u;e+=256u) {
+            dbg[106496u+e]=gT[w*4096u+e];
+            dbg[40960u+e]=gY[w*4096u+e];
+        }
+        barrier();
+    }
+    // 1x4 blocking: one 8-token M block x all four 16-channel n-blocks per subgroup.
+    // sg selects the M block; the A tile of (m,k) is shared by the four n-blocks.
+    const uint m=sg*8u,abase=(w*64u+m)*64u;
+    MAT_C acc0,acc1,acc2,acc3;
+    {
+        {
+            MAT_H scale;
+            float16_t gain=pack[(ars+0u)+(lane & 15u)];
+            for(int component=0;component<scale.length();++component) scale[component]=gain;
+            MAT_H seed;
+            coopMatLoad(seed,gY,abase+0u,64u,LROW);
+            seed=seed*scale;
+#if NR_D4_MODE == 2
+            acc0=MAT_C(0.0);
+#else
+            acc0=MAT_C(seed);
+#endif
+        }
+        {
+            MAT_H scale;
+            float16_t gain=pack[(ars+16u)+(lane & 15u)];
+            for(int component=0;component<scale.length();++component) scale[component]=gain;
+            MAT_H seed;
+            coopMatLoad(seed,gY,abase+16u,64u,LROW);
+            seed=seed*scale;
+#if NR_D4_MODE == 2
+            acc1=MAT_C(0.0);
+#else
+            acc1=MAT_C(seed);
+#endif
+        }
+        {
+            MAT_H scale;
+            float16_t gain=pack[(ars+32u)+(lane & 15u)];
+            for(int component=0;component<scale.length();++component) scale[component]=gain;
+            MAT_H seed;
+            coopMatLoad(seed,gY,abase+32u,64u,LROW);
+            seed=seed*scale;
+#if NR_D4_MODE == 2
+            acc2=MAT_C(0.0);
+#else
+            acc2=MAT_C(seed);
+#endif
+        }
+        {
+            MAT_H scale;
+            float16_t gain=pack[(ars+48u)+(lane & 15u)];
+            for(int component=0;component<scale.length();++component) scale[component]=gain;
+            MAT_H seed;
+            coopMatLoad(seed,gY,abase+48u,64u,LROW);
+            seed=seed*scale;
+#if NR_D4_MODE == 2
+            acc3=MAT_C(0.0);
+#else
+            acc3=MAT_C(seed);
+#endif
+        }
+    }
+    for (uint ki=0u;ki<4u;++ki) {
+        const uint k0=ki*16u;
+        MAT_A a;
+        coopMatLoad(a,gT,abase+k0,64u,LROW);
+        MAT_B b0,b1;
+        coopMatLoad(b0,pack,wo+0u*1024u+ki*256u,16u,LCOL);
+        coopMatLoad(b1,pack,wo+1u*1024u+ki*256u,16u,LCOL);
+#if NR_D4_MODE != 1
+        // The single A tile feeds two DPAS before the next weight pair is needed.
+        acc0=coopMatMulAdd(a,b0,acc0);
+        acc1=coopMatMulAdd(a,b1,acc1);
+#endif
+        MAT_B b2,b3;
+        coopMatLoad(b2,pack,wo+2u*1024u+ki*256u,16u,LCOL);
+        coopMatLoad(b3,pack,wo+3u*1024u+ki*256u,16u,LCOL);
+#if NR_D4_MODE != 1
+        acc2=coopMatMulAdd(a,b2,acc2);
+        acc3=coopMatMulAdd(a,b3,acc3);
+#endif
+    }
+    {
+        MAT_H narrowed=MAT_H(acc0);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<narrowed.length();++ci) narrowed[ci]=nr_e4m3_h(narrowed[ci]);
+#endif
+        if (debug) coopMatStore(narrowed,dbg,110592u+m*64u+0u,64u,LROW);
+        bool oob;
+        uint addr=c64_img_half_index(m,0u,wx,wy,oob);
+        if (!oob) coopMatStore(narrowed,imgout,addr,16u,LROW);
+    }
+    {
+        MAT_H narrowed=MAT_H(acc1);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<narrowed.length();++ci) narrowed[ci]=nr_e4m3_h(narrowed[ci]);
+#endif
+        if (debug) coopMatStore(narrowed,dbg,110592u+m*64u+16u,64u,LROW);
+        bool oob;
+        uint addr=c64_img_half_index(m,16u,wx,wy,oob);
+        if (!oob) coopMatStore(narrowed,imgout,addr,16u,LROW);
+    }
+    {
+        MAT_H narrowed=MAT_H(acc2);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<narrowed.length();++ci) narrowed[ci]=nr_e4m3_h(narrowed[ci]);
+#endif
+        if (debug) coopMatStore(narrowed,dbg,110592u+m*64u+32u,64u,LROW);
+        bool oob;
+        uint addr=c64_img_half_index(m,32u,wx,wy,oob);
+        if (!oob) coopMatStore(narrowed,imgout,addr,16u,LROW);
+    }
+    {
+        MAT_H narrowed=MAT_H(acc3);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<narrowed.length();++ci) narrowed[ci]=nr_e4m3_h(narrowed[ci]);
+#endif
+        if (debug) coopMatStore(narrowed,dbg,110592u+m*64u+48u,64u,LROW);
+        bool oob;
+        uint addr=c64_img_half_index(m,48u,wx,wy,oob);
+        if (!oob) coopMatStore(narrowed,imgout,addr,16u,LROW);
+    }
+}

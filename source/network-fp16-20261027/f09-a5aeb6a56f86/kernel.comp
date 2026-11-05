@@ -1,0 +1,203 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+layout(local_size_x=256) in;
+#include "split16_common.glsl"
+// e4m3 rounding of the projection store.
+// `layers/split_swin.py` SplitFfwdProj.forward ends with `return q8(value)` on an
+// f16 `value`, i.e. exactly this f16 -> e4m3 step. NR_QUANT_E4M3=0 disables it.
+#ifndef NR_QUANT_E4M3
+#define NR_QUANT_E4M3 1
+#endif
+#include "e4m3.glsl"
+// S21 fragment epilogue (unchanged from the parent): the FP32 accumulator is
+// narrowed once to this half accumulator fragment after the whole K loop.
+#define MH coopmat<float16_t,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>
+// KIND 0 ffwd residual, 1 attention projection, 2 projection+pool,
+// 3 finalhead, 4 projection+outview.
+//
+// New identity (B5-derived, seed-direct, KIND0 build): the parent staged the
+// FP32 accumulate seed in `shared float scratch[1024]` (one 8x16 block per
+// subgroup) and loaded it back with coopMatLoad, with two subgroup barriers per
+// side. The producer lane of each element and the consumer lane of that same
+// element are the same lane and the same component:
+//   producer loop e = lane + 32*ci, row = e/16, col = e%16
+//   -> producer lane = (row%2)*16 + col, producer component = row/2
+//   B580 CH/C component map: component ci of lane lv = (row = 2*ci + lv/16,
+//   col = lv%16)  => consumer lane = (row%2)*16 + col, component = row/2.
+// So for KIND0 the shared round trip and its barriers are deleted; the seed is
+// written straight into the accumulator components the lane already owns.
+//
+// Kept exactly: the half multiply `input*weights[rs+c]`, its float widening
+// into the accumulator (the seed precision node), the K loop, the MH narrowing
+// point and the direct end store of the parent. The other KIND variants keep
+// the parent text verbatim (byte-identical rebuilds were verified for KIND0).
+//
+// N09-b (KIND0 only): the 16 KiB global->shared A staging `sx[8192]` and its
+// workgroup barrier are deleted; the A fragment is read straight from the
+// ffwd surface with a 16-half row stride (one 256 B contiguous 8x16 tile per
+// K step). The staging copy and the barrier existed only to reshape the
+// stride; the addresses are element-wise identical (PROOF.json), the K order
+// and every floating expression are untouched.
+//
+// N09-c (KIND0 only, this card): one B fragment now serves both 8-token halves
+// of the workgroup's 16-token block. Per k step the two A fragments are the
+// parent's two m0 tiles (0 and +128 halves inside the same 256-half 16-token
+// supertile block) and the single B fragment is the parent's b0 form with this
+// subgroup's channel base n0 = sg*16. Nothing about the contraction changes:
+// acc0 accumulates tokens 0..7 and acc1 tokens 8..15, both over the *same* 16
+// channels and the *same* K block, so each output element still sees its own
+// unchanged K order and rounding point, and there are still 2 accumulators.
+// What changes is only which subgroup owns which (token,channel) block: the
+// weight tile is now fetched once per workgroup instead of twice (m0=0 and
+// m0=8 shared it), at the price of every subgroup reading both A halves.
+// Per workgroup: weights 256 -> 128 KiB, A 64 -> 128 KiB, total 320 -> 256 KiB
+// (-20%) with dpas still 64 and no SLM / layout change of any kind.
+#ifndef KIND
+#define KIND 0
+#endif
+#if KIND!=0
+shared float16_t sx[8192];
+#endif
+#if KIND==2
+shared float16_t so[2048];   // KIND2 pool only; KIND0 never reads it
+#endif
+#if KIND!=0
+shared float scratch[1024];  // parent seed/end staging for the non-built variants
+#endif
+uint token_at(uint s) {
+#if KIND==1 || KIND==2 || KIND==4
+    return spatial_token(gl_WorkGroupID.x,s);
+#else
+    return gl_WorkGroupID.x*16u+s;
+#endif
+}
+void main() {
+    uint lid=gl_LocalInvocationID.x,sg=lid/32u,lane=lid%32u,ng=gl_WorkGroupID.y;
+#if KIND!=0
+    for(uint e=lid;e<8192u;e+=256u) {
+        uint t=token_at(e/512u),c=e%512u;
+#if KIND==3
+        sx[e]=gp[tiled(t,c,512u)];
+#else
+        sx[e]=gt[tiled(t,c,512u)];
+#endif
+    }
+    barrier();
+#endif
+#if KIND==0
+    // N09-c: subgroup sg owns channels ng*128+sg*16 .. +15 for all 16 tokens of
+    // this workgroup's token block (m0 is gone for KIND0).
+    uint n0=sg*16u,base=ng*128u+n0;
+#else
+    uint m0=sg/4u*8u,n0=(sg%4u)*32u,base=ng*128u+n0;
+#endif
+#if KIND==0
+    uint wb=uint(pc.p2.w),rs=uint(pc.p3.x);
+#elif KIND==3
+    uint wb=uint(pc.p4.z),rs=0u;
+#else
+    uint wb=uint(pc.p3.z),rs=uint(pc.p3.w);
+#endif
+    MC acc0=MC(0.0),acc1=MC(0.0);
+#if KIND==0
+    // Seed for the low half (tokens 0..7, acc0) and the high half (tokens 8..15,
+    // acc1); both hold the same 16 channels base..base+15.
+    // Component ci of this lane is (row,col)=(2*ci+lane/16, lane%16).
+    for(uint ci=0u;ci<acc0.length();++ci) {
+        uint row=(lane>>4u)+2u*ci,col=lane&15u;
+        uint t=token_at(row),c=base+col;
+        precise float16_t seed=input_value(t,c)*weights[rs+c];
+        acc0[ci]=float(seed);
+    }
+    for(uint ci=0u;ci<acc0.length();++ci) {
+        uint row=(lane>>4u)+2u*ci,col=lane&15u;
+        uint t=token_at(8u+row),c=base+col;
+        precise float16_t seed=input_value(t,c)*weights[rs+c];
+        acc1[ci]=float(seed);
+    }
+#elif KIND!=3
+    for(uint side=0u;side<2u;side++) {
+        for(uint e=lane;e<128u;e+=32u) {
+            uint t=token_at(m0+e/16u),c=base+side*16u+e%16u;
+            precise float16_t seed=gy[tiled(t,c,512u)]*weights[rs+c];
+            scratch[sg*128u+e]=float(seed);
+        }
+        subgroupMemoryBarrierShared();subgroupBarrier();
+        if(side==0u) coopMatLoad(acc0,scratch,sg*128u,16u,ROW);
+        else coopMatLoad(acc1,scratch,sg*128u,16u,ROW);
+        subgroupMemoryBarrierShared();subgroupBarrier();
+    }
+#endif
+#if KIND==0
+    // N09-c: A tile base of this workgroup's 16-token block. Row r of the low
+    // tile is token_at(r), row r of the high tile is token_at(8+r), column c is
+    // channel (k/16)*16+c, so each 8x16 fragment is 128 contiguous halves at a
+    // 16-half row stride and the high tile starts 128 halves (256 B) further.
+    uint abase=tiled(token_at(0u),0u,512u);
+#endif
+    for(uint k=0u;k<512u;k+=16u) {
+#if KIND==0
+        MA a0,a1;MB b;
+        coopMatLoad(a0,gf,abase+(k/16u)*256u,16u,ROW);
+        coopMatLoad(a1,gf,abase+(k/16u)*256u+128u,16u,ROW);
+        coopMatLoad(b,weights,wb+base*512u+k,512u,COL);
+        acc0=coopMatMulAdd(a0,b,acc0);acc1=coopMatMulAdd(a1,b,acc1);
+#else
+        MA a;MB b0,b1;
+        coopMatLoad(a,sx,m0*512u+k,512u,ROW);
+        coopMatLoad(b0,weights,wb+base*512u+k,512u,COL);
+        coopMatLoad(b1,weights,wb+(base+16u)*512u+k,512u,COL);
+        acc0=coopMatMulAdd(a,b0,acc0);acc1=coopMatMulAdd(a,b1,acc1);
+#endif
+    }
+#if KIND==0
+    // Direct end store of the parent (unchanged narrowing point). acc0 holds
+    // token rows 0..7 and acc1 rows 8..15 of the same 16-token block at this
+    // subgroup's 16 channels; rows 8..15 start 8*16 = 128 halves further in, so
+    // both stores write the parent's own address window, just with m0 folded in.
+    for(uint side=0u;side<2u;side++) {
+        MH h;
+        if(side==0u) h=MH(acc0); else h=MH(acc1);
+#if NR_QUANT_E4M3
+        for(uint ci=0u;ci<h.length();++ci) h[ci]=nr_e4m3_h(h[ci]);
+#endif
+        coopMatStore(h,gy,tiled(token_at(0u),base,512u)+128u*side,16u,ROW);
+    }
+#else
+    for(uint side=0u;side<2u;side++) {
+        if(side==0u) coopMatStore(acc0,scratch,sg*128u,16u,ROW);
+        else coopMatStore(acc1,scratch,sg*128u,16u,ROW);
+        subgroupMemoryBarrierShared();subgroupBarrier();
+        for(uint e=lane;e<128u;e+=32u) {
+            uint s=m0+e/16u,t=token_at(s),n=n0+side*16u+e%16u,c=ng*128u+n;
+            float16_t v=float16_t(scratch[sg*128u+e]);
+#if KIND==3
+            gh[t*1024u+c]=v; // finalhead -> ViT canonical raster token-major
+#elif KIND==4
+            go[view(t,c)]=v;
+#else
+            go[tiled(t,c,512u)]=v;
+#endif
+            so[s*128u+n]=v;
+        }
+        subgroupMemoryBarrierShared();subgroupBarrier();
+    }
+#endif
+#if KIND==2
+    barrier();
+    for(uint e=lid;e<512u;e+=256u) {
+        uint p=e/128u,c=e%128u,s=(p/2u)*8u+(p%2u)*2u;
+        precise float16_t a=so[s*128u+c]+so[(s+1u)*128u+c];
+        precise float16_t b=so[(s+4u)*128u+c]+so[(s+5u)*128u+c];
+        precise float16_t sum=a+b;
+        float16_t mean=sum*float16_t(0.25);
+        uint tx=gl_WorkGroupID.x%uint(pc.p0.x/4),ty=gl_WorkGroupID.x/uint(pc.p0.x/4);
+        uint tok=(ty*2u+p/2u)*uint(pc.p7.x)+tx*2u+p%2u;
+        gp[tiled(tok,ng*128u+c,512u)]=mean;
+    }
+#endif
+}

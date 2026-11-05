@@ -1,0 +1,72 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+layout(local_size_x=256) in;
+#include "b3_04_vit_common.glsl"
+#define MH coopmat<float16_t,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>
+shared float16_t pairRaw[4096];
+void main() {
+    uint tid=gl_LocalInvocationID.x,sg=gl_SubgroupID;
+    uint mA=gl_WorkGroupID.x*128u+sg*8u,mB=mA+64u,n0=gl_WorkGroupID.y*32u;
+    const uint K=1024u;
+    {
+        MC accA0=MC(0.0),accA1=MC(0.0),accB0=MC(0.0),accB1=MC(0.0);
+        for(uint k0=0u;k0<K;k0+=16u) {
+            MB b0,b1;
+            coopMatLoad(b0,w,vit_wbase(pc.p1.z,n0,k0,K),16u,CM);
+            coopMatLoad(b1,w,vit_wbase(pc.p1.z,n0+16u,k0,K),16u,CM);
+            MA af;
+            if(mA<pc.p0.x) {
+                coopMatLoad(af,y,pc.p5.w+mA*K+k0,K,RM);
+                accA0=coopMatMulAdd(af,b0,accA0);
+                accA1=coopMatMulAdd(af,b1,accA1);
+            }
+            if(mB<pc.p0.x) {
+                coopMatLoad(af,y,pc.p5.w+mB*K+k0,K,RM);
+                accB0=coopMatMulAdd(af,b0,accB0);
+                accB1=coopMatMulAdd(af,b1,accB1);
+            }
+        }
+        for(uint group=0u;group<2u;++group) {
+            uint m=group==0u?mA:mB,localM=sg*8u+group*64u;
+            for(uint side=0u;side<2u;++side) {
+                MH halfResult;
+                if(group==0u) {
+                    if(side==0u)halfResult=MH(accA0);else halfResult=MH(accA1);
+                } else {
+                    if(side==0u)halfResult=MH(accB0);else halfResult=MH(accB1);
+                }
+                coopMatStore(halfResult,pairRaw,localM*32u+side*16u,32u,RM);
+                if(pc.p0.w!=0u&&m<pc.p0.x)
+                    coopMatStore(halfResult,dbg,pc.p6.z+pc.p3.y+m*3072u+n0+side*16u,3072u,RM);
+            }
+        }
+    } // Matrix objects end before the original owner norm array.
+    barrier();
+    if(tid<128u&&gl_WorkGroupID.x*128u+tid<pc.p0.x) {
+        uint t=gl_WorkGroupID.x*128u+tid;
+        float16_t inv=float16_t(1.0);
+        if(n0<2048u) {
+            precise float16_t s[16];
+            for(uint d=0u;d<16u;++d) {
+                precise float16_t a=pairRaw[tid*32u+d]*pairRaw[tid*32u+d];
+                precise float16_t b=pairRaw[tid*32u+d+16u]*pairRaw[tid*32u+d+16u];
+                s[d]=a+b;
+            }
+            for(uint step=8u;step>0u;step>>=1u)
+                for(uint d=0u;d<step;++d)s[d]=s[d]+s[d+step];
+            inv=float16_t(inversesqrt(float(max(s[0],float16_t(0.000062)))));
+        }
+        float16_t scale=float16_t(scales[pc.p2.z+(n0%1024u)/32u]);
+        for(uint d=0u;d<32u;++d) {
+            precise float16_t z=pairRaw[tid*32u+d];
+            if(n0<1024u)z=z*float16_t(5.65625);
+            if(n0<2048u)z=z*inv;
+            if(n0<1024u)z=z*scale;
+            qkv[pc.p6.x+t*3072u+n0+d]=z;
+        }
+    }
+}

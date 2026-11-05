@@ -1,0 +1,115 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_KHR_shader_subgroup_basic : require
+#extension GL_KHR_shader_subgroup_shuffle : require
+#extension GL_KHR_cooperative_matrix : require
+#extension GL_KHR_memory_scope_semantics : require
+#extension GL_EXT_shader_explicit_arithmetic_types_float16 : require
+layout(local_size_x=256) in;
+#include "split16_common.glsl"
+// Fragment epilogue: one half narrowing of the FP32 accumulator after the
+// whole K loop (the same shape S20 uses).
+#define MH coopmat<float16_t,gl_ScopeSubgroup,8,16,gl_MatrixUseAccumulator>
+// KIND 0 ffwd residual, 1 attention projection, 2 projection+pool,
+// 3 finalhead, 4 projection+outview. 24,576 bytes shared (pool staging included).
+#ifndef KIND
+#define KIND 0
+#endif
+shared float16_t sx[8192];
+shared float scratch[1024];
+uint token_at(uint s) {
+#if KIND==1 || KIND==2 || KIND==4
+    return spatial_token(gl_WorkGroupID.x,s);
+#else
+    return gl_WorkGroupID.x*16u+s;
+#endif
+}
+void main() {
+    uint lid=gl_LocalInvocationID.x,sg=lid/32u,lane=lid%32u,ng=gl_WorkGroupID.y;
+    for(uint e=lid;e<8192u;e+=256u) {
+        uint t=token_at(e/512u),c=e%512u;
+#if KIND==0
+        sx[e]=gf[tiled(t,c,512u)];
+#elif KIND==3
+        sx[e]=gp[tiled(t,c,512u)];
+#else
+        sx[e]=gt[tiled(t,c,512u)];
+#endif
+    }
+    barrier();
+    uint m0=sg/4u*8u,n0=(sg%4u)*32u,base=ng*128u+n0;
+#if KIND==0
+    uint wb=uint(pc.p2.w),rs=uint(pc.p3.x);
+#elif KIND==3
+    uint wb=uint(pc.p4.z),rs=0u;
+#else
+    uint wb=uint(pc.p3.z),rs=uint(pc.p3.w);
+#endif
+    MC acc0=MC(0.0),acc1=MC(0.0);
+#if KIND!=3
+    for(uint side=0u;side<2u;side++) {
+        for(uint e=lane;e<128u;e+=32u) {
+            uint t=token_at(m0+e/16u),c=base+side*16u+e%16u;
+#if KIND==0
+            precise float16_t seed=input_value(t,c)*weights[rs+c];
+#else
+            precise float16_t seed=gy[tiled(t,c,512u)]*weights[rs+c];
+#endif
+            scratch[sg*128u+e]=float(seed);
+        }
+        subgroupMemoryBarrierShared();subgroupBarrier();
+        if(side==0u) coopMatLoad(acc0,scratch,sg*128u,16u,ROW);
+        else coopMatLoad(acc1,scratch,sg*128u,16u,ROW);
+        subgroupMemoryBarrierShared();subgroupBarrier();
+    }
+#endif
+    for(uint k=0u;k<512u;k+=16u) {
+        MA a;MB b0,b1;
+        coopMatLoad(a,sx,m0*512u+k,512u,ROW);
+        coopMatLoad(b0,weights,wb+base*512u+k,512u,COL);
+        coopMatLoad(b1,weights,wb+(base+16u)*512u+k,512u,COL);
+        acc0=coopMatMulAdd(a,b0,acc0);acc1=coopMatMulAdd(a,b1,acc1);
+    }
+    // NR_EPI_FRAGMENT (B580), KIND2: one MH narrowing per side, written straight
+    // to go, then the pool is reduced from that same fragment.  Intel sealed CH
+    // map for MH(8x16, Accumulator): lane lv, component i -> (row = 2*i + (lv>>4),
+    // col = lv&15).  Rows are tokens (A side = sx), cols are channels (B side =
+    // weights), so lv<16 owns rows 0,2,4,6 and lv^16 rows 1,3,5,7: one packed
+    // shuffle per row-pair brings (0,1)&(4,5) / (2,3)&(6,7) into the low lanes.
+    // c is already the global channel (ng*128 inside); the original per-step half
+    // tree ((v0+v1)+(v4+v5))*0.25 and its precise anchors are unchanged.
+    for(uint side=0u;side<2u;side++) {
+        MH h;
+        if(side==0u) h=MH(acc0); else h=MH(acc1);
+        coopMatStore(h,go,tiled(token_at(m0),base+16u*side,512u),16u,ROW);
+        uint lv=gl_SubgroupInvocationID;
+        uint q0=subgroupShuffle(packFloat2x16(f16vec2(h[0],h[2])),lv^16u);
+        uint q1=subgroupShuffle(packFloat2x16(f16vec2(h[1],h[3])),lv^16u);
+        if(lv<16u) {
+            f16vec2 o0=unpackFloat2x16(q0),o1=unpackFloat2x16(q1);
+            const uint c=ng*128u+n0+16u*side+(lv&15u);
+            const uint tx=gl_WorkGroupID.x%uint(pc.p0.x/4u);
+            const uint ty=gl_WorkGroupID.x/uint(pc.p0.x/4u);
+            // b = 0: pooled rows s,s+1 = h[0] of lv and lv^16; s+4,s+5 = h[2].
+            {
+                precise float16_t a=h[0]+o0.x;
+                precise float16_t bb=h[2]+o0.y;
+                precise float16_t sum=a+bb;
+                uint p=2u*(m0/8u);
+                uint Px=tx*2u+p%2u,Py=ty*2u+p/2u;
+                uint tok=((Py/4u)*uint(pc.p7.x/4u)+Px/4u)*16u+4u*(Py%4u)+Px%4u;
+                gp[tiled(tok,c,512u)]=sum*float16_t(0.25);
+            }
+            // b = 1: the same tree one row-pair down, from h[1] and h[3].
+            {
+                precise float16_t a=h[1]+o1.x;
+                precise float16_t bb=h[3]+o1.y;
+                precise float16_t sum=a+bb;
+                uint p=2u*(m0/8u)+1u;
+                uint Px=tx*2u+p%2u,Py=ty*2u+p/2u;
+                uint tok=((Py/4u)*uint(pc.p7.x/4u)+Px/4u)*16u+4u*(Py%4u)+Px%4u;
+                gp[tiled(tok,c,512u)]=sum*float16_t(0.25);
+            }
+        }
+    }
+}
