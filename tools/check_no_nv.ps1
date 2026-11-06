@@ -30,7 +30,7 @@ $ErrorActionPreference = 'Stop'
 $rules = @(
     @{ Name = 'NVIDIA 运行时 nvngx*.dll'; Rule = '(^|[/\\])nvngx[^/\\]*\.dll$' }
     @{ Name = '由运行时派生的着色器 __small-*'; Rule = '__small-[0-9a-f]{6,}' }
-    @{ Name = '着色器资产 assets/spv/*.spv'; Rule = '[/\\]assets[/\\]spv[/\\][^/\\]+\.spv$' }
+    # 本仓库自有的 port_network_bridge_*.spv 允许存在（由 source/ 编译），只有 __small-* 属派生内容
     @{ Name = '权重资产 assets/cold/*.bin'; Rule = '[/\\]assets[/\\]cold[/\\][^/\\]+\.bin$' }
     @{ Name = '任意权重 .bin'; Rule = '\.bin$' }
     @{ Name = '上采样器二进制'; Rule = '(^|[/\\])(OptiScaler|dxgi|winmm|version|dbghelp|d3d12)\.dll$' }
