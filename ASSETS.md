@@ -16,7 +16,7 @@
 | `frozen-identity.txt` | 2 行 | manifest / runtime 身份 |
 | `source\` | 336 个文件 / 4.1 MB | 改名后的 V3.7 源码（已剔除 `research-archive`） |
 
-包体合计约 **5.2 MB**（纯源码与文档；不含权重、着色器与 NVIDIA 运行时）。
+包体合计约 **7.9 MB / 466 个文件**（纯源码与文档；不含权重、着色器与 NVIDIA 运行时）。
 
 ## 不随包分发（需你自备）
 
