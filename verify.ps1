@@ -50,8 +50,8 @@ foreach ($line in (Get-Content $ListPath -Encoding UTF8)) {
     if (-not $stats.ContainsKey($cat)) { $stats[$cat] = @{ ok = 0; bad = 0; miss = 0 } }
     $file = Join-Path $nr ($rel -replace '/', '\')
     if (-not (Test-Path $file)) {
-        # 权重缺失不算失败：本包不分发权重，缺失由用户自行补齐
-        if ($cat -eq 'cold') { $stats[$cat].miss++ }
+        # 权重与 NVIDIA 运行时派生着色器都不随仓库/发布包分发：缺失只计数，不算失败
+        if ($cat -eq 'cold' -or $cat -eq 'spv') { $stats[$cat].miss++ }
         else { $stats[$cat].bad++; $fail += "缺少: $rel" }
         continue
     }
@@ -102,12 +102,15 @@ if (Test-Path $core) {
     }
     '  dlssnr_core.dll {0:N0} B' -f (Get-Item $core).Length
 } else {
-    '  ✗ 缺少 dlssnr_core.dll（校验的是安装目录时请确认文件已复制）'
+    '  ✗ 缺少 dlssnr_core.dll（本仓库不带二进制；校验游戏安装目录时请确认文件已复制）'
 }
 
 ''
 if ($stats.ContainsKey('cold') -and $stats['cold'].ok -eq 0) {
-    Write-Warning "assets\cold 为空：本包不含权重，请把你自己的权重文件放到 $nr\assets\cold（70 个，须与 frozen-files.sha256 逐条一致）。"
+    Write-Warning "assets\cold 为空：本仓库不含权重，需你自备 70 个 .bin 放到 $nr\assets\cold（须与 frozen-files.sha256 的 cold 条目逐条一致）。"
+}
+if ($stats.ContainsKey('spv') -and $stats['spv'].ok -eq 0) {
+    Write-Warning "assets\spv 为空：本仓库不含 NVIDIA 运行时派生着色器，需用你自己那份 nvngx_dlssnr.dll 配合 tools\build_assets.py 生成（须与 frozen-files.sha256 的 spv 条目逐条一致）。"
 }
 
 if ($fail.Count -gt 0) {
@@ -115,4 +118,11 @@ if ($fail.Count -gt 0) {
     $fail | Select-Object -First 12 | ForEach-Object { '    ' + $_ }
     exit 1
 }
-Write-Host '✔ 全部文件与 core 内置身份一致。' -ForegroundColor Green
+$missing = 0
+foreach ($k in $stats.Keys) { $missing += $stats[$k].miss }
+if ($missing -gt 0) {
+    Write-Host "✔ 已存在文件与 core 内置身份全部一致；另有 $missing 项属未随包分发资产（cold/spv），补齐后再跑一次即可全绿。" -ForegroundColor Green
+}
+else {
+    Write-Host '✔ 全部文件与 core 内置身份一致。' -ForegroundColor Green
+}

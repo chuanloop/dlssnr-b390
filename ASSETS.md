@@ -4,19 +4,19 @@
 
 | 路径 | 内容 | 说明 |
 |---|---|---|
-| `game-files\dlssnr_core.dll` | 5,431,431 B<br>`d7a21d612548953b7b623dd79edea6365b2d25f9bfdeee428d0e7fbddae85877` | NR 内核，内置冻结身份 `bf6c087a…` / `c168a078…` |
+| `game-files\dlssnr_core.dll` | 5,437,700 B<br>`2f581b61…`（完整哈希见 `frozen-files.sha256` 无关，内核自身 sha256 见 release 说明） | NR 内核（v1.3，含首帧切帧崩溃修复），内置冻结身份 `83ded71e…` / `2a0ed57d…` |
 | `game-files\dlssnr-b390.ini` | 17,619 B | 后端配置（分辨率档位、int4、日志级别等），游戏内改即生效 |
 | `game-files\dlssnr-b390\assets\cold\` | **空目录** | 权重不分发，需自行准备（见下节） |
-| `game-files\dlssnr-b390\assets\spv\` | 42 个 `.spv` | 网络着色器（含 gather/scatter/scatter32）。其中 **39 个 `__small-*.spv` 来源为官方运行时的离线抽取，仅供参考**；其余 3 个 `port_network_bridge_*.spv` 为本项目编译产物 |
-| `game-files\dlssnr-b390\manifest\` | `port_network_manifest.json`、`port_network_runtime.txt`、`nr_tune.txt` 共 3 个 | 派发计划与运行参数 |
+| `game-files\dlssnr-b390\assets\spv\` | **不再分发**（0 个） | 需你用自己那份 `nvngx_dlssnr.dll` 配合 `tools\build_assets.py` 复现 42 支（39 `__small-*` + 3 `port_network_bridge_*`）；哈希见 `frozen-files.sha256` |
+| `game-files\dlssnr-b390\manifest\` | `port_network_manifest.json`、`port_network_runtime.txt`、`cold_resources_index.json` 共 3 个 + `ladder\` 37 档 | 派发计划与运行参数 |
 | `game-files\dlssnr-b390\nr_tune.txt` | 运行参数模板 | 可直接改，游戏内热生效 |
 | `game-files\dlssnr-b390\nr_present_probe.exe` | 探针工具 | 排查用，非必需 |
-| `generated\port_network_bridge_backend_frozen.inc` | 110 条冻结条目 | **已修正版**，重编时必须使用这一份 |
-| `frozen-files.sha256` | 110 行 | 与内核内置校验完全一致，供 `verify.ps1` 使用；cold 70 条即权重应满足的哈希 |
+| `generated\port_network_bridge_backend_frozen.inc` | 112 条冻结条目 | 与 v1.3 内核内置清单一致；重编时必须使用这一份 |
+| `frozen-files.sha256` | 112 行 | 与内核内置校验完全一致，供 `verify.ps1` 使用；cold 70 条、spv 42 条 |
 | `frozen-identity.txt` | 2 行 | manifest / runtime 身份 |
 | `source\` | 336 个文件 / 4.1 MB | 改名后的 V3.7 源码（已剔除 `research-archive`） |
 
-包体合计约 **41 MB**（不含权重；`game-files` 约 9.3 MB）。
+包体合计约 **5.2 MB**（纯源码与文档；不含权重、着色器与 NVIDIA 运行时）。
 
 ## 不随包分发（需你自备）
 

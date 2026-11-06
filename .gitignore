@@ -31,3 +31,17 @@ source/bridge/shaders/nr_hdr_proxy.hlsl
 # 各包和游戏目录都要带它，但只能本地复制，不进仓库
 nvngx_dlssnr.dll
 nvngx*.dll
+
+# 由 NVIDIA 运行时派生的着色器与权重：一律不入库
+game-files/dlssnr-b390/assets/
+game-files/dlssnr-b390/nr_tune_read.txt
+**/assets/spv/*.spv
+**/assets/cold/*.bin
+
+# 打包与实验残留
+*.bak
+*.bak-*
+*.pad.txt
+**/_backup/
+*.dmp
+nr_tune_read.txt

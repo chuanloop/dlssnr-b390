@@ -15,9 +15,14 @@
 
 ## 2. 运行时抽取产物（权利不属本项目）
 
-`game-files/dlssnr-b390/assets/spv/` 下的 39 个 `__small-*.spv` 是 NVIDIA 官方运行时 `nvngx_dlssnr.dll`（310.9.16.0）的 SPIR-V 产物，随包提供**仅为让内核能直接运行**，本项目不主张任何权利，权利仍归 NVIDIA。它们未经张量重排，可由同版本 DLL 配合 `tools/build_assets.py` 重新产出；若你要公开再分发或对权利归属有疑虑，删除这 39 个文件、用你自己那份 DLL 重建即可——内核按 `frozen-files.sha256` 逐条校验，哈希一致即可运行。
+`game-files/dlssnr-b390/assets/spv/` 下的 39 个 `__small-*.spv` 是 NVIDIA 官方运行时 `nvngx_dlssnr.dll`（310.9.16.0）的 SPIR-V 产物，本项目不主张任何权利，权利仍归 NVIDIA。
 
-同目录另 3 个 `port_network_bridge_*.spv` 由本仓库 `source/` 编译产出，属本项目 MIT 范围。
+**自 v1.3 起这 39 个文件不再随仓库或 Release 分发**（`.gitignore` 的 `**/assets/spv/*.spv` 与 `tools/check_no_nv.ps1`
+会强制这一点）。公开渠道只提供生成方式：用你自己那份同版本 DLL 配合 `tools/build_assets.py` 在本地产出，内核按
+`frozen-files.sha256` 的 42 条 spv 记录逐条校验，哈希一致即可运行。你若持有旧包里的这 39 个文件，那只是本地副本，
+不要再分发。
+
+同目录另 3 个 `port_network_bridge_*.spv` 由本仓库 `source/` 编译产出，属本项目 MIT 范围（同样不随仓库分发，可自行编译）。
 
 本包不含权重：`game-files/dlssnr-b390/assets/cold/` 为空目录，70 个 `.bin` 属 NVIDIA 模型数据，需自备，`verify.ps1` 按 `frozen-files.sha256` 的 cold 条目校验。
 
