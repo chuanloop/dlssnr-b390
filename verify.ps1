@@ -107,10 +107,10 @@ if (Test-Path $core) {
 
 ''
 if ($stats.ContainsKey('cold') -and $stats['cold'].ok -eq 0) {
-    Write-Warning "assets\cold 为空：本仓库不含权重，需你自备 70 个 .bin 放到 $nr\assets\cold（须与 frozen-files.sha256 的 cold 条目逐条一致）。"
+    Write-Warning "assets\cold 为空：公开渠道不含权重，需你自备 70 个 .bin 放到 $nr\assets\cold（须与 frozen-files.sha256 的 cold 条目逐条一致）。"
 }
 if ($stats.ContainsKey('spv') -and $stats['spv'].ok -eq 0) {
-    Write-Warning "assets\spv 为空：本仓库不含 NVIDIA 运行时派生着色器，需用你自己那份 nvngx_dlssnr.dll 配合 tools\build_assets.py 生成（须与 frozen-files.sha256 的 spv 条目逐条一致）。"
+    Write-Warning "assets\spv 为空：公开渠道不含 NVIDIA 运行时派生着色器，需用你自己那份 nvngx_dlssnr.dll 配合 tools\build_assets.py 生成（须与 frozen-files.sha256 的 spv 条目逐条一致）。"
 }
 
 if ($fail.Count -gt 0) {
