@@ -35,7 +35,7 @@ NR 就崩；修好后这些游戏可以持续运行，兼容面不再取决于�
 | `dlssnr_core.dll` | 5,431,431 B | **5,437,700 B**，SHA-256 `2F581B61…` |
 | 冻结清单 | 110 条（cold 70 + spv 40） | **112 条**（cold 70 + spv 42） |
 | manifest / runtime 身份 | `bf6c087a…` / `c168a078…` | **`83ded71e…` / `2a0ed57d…`** |
-| 派发 ladder | 37 档 | **37 档**（上限 1280x800） |
+| 派发 ladder | 37 档 | 37 档（未变，上限 1280x800） |
 
 内核是本文档所述修复的重新编译产物，`frozen-files.sha256`、`frozen-identity.txt` 与
 `generated/port_network_bridge_backend_frozen.inc` 已同步到同一份身份。
